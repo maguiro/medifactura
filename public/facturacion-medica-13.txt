@@ -1,0 +1,22 @@
+
+PRINCIPAL
+
+Dashboard
+
+Registrar actividad
+
+Actividad
+
+Facturas
+CONFIGURACIÓN
+
+Empresas clientes
+
+Sucursales
+
+Actos médicos
+
+Mi empresa
+
+Exportar datos 
+
