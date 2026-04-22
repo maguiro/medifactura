@@ -312,6 +312,163 @@ document.getElementById('OV').addEventListener('click', function(e){
   if(e.target===document.getElementById('OV')) closeM();
 });
 
+// ── IMPORTACIÓN IA ───────────────────────────────────────────────────────────
+function abrirImport(){
+  openM('<h2>Importar actividad</h2>'
+    +'<p style="font-size:13px;color:var(--tx2);margin-bottom:16px">Sube una foto de tu hoja de actividad o un archivo Excel/Numbers. La IA extraerá los datos automáticamente.</p>'
+    +'<div style="border:2px dashed var(--bor);border-radius:10px;padding:30px;text-align:center;margin-bottom:16px;cursor:pointer" onclick="document.getElementById(&quot;imp-file&quot;).click()" id="imp-drop">'
+    +'<div style="font-size:32px;margin-bottom:8px">📎</div>'
+    +'<div style="font-size:14px;font-weight:500;color:var(--tx)">Haz clic para seleccionar archivo</div>'
+    +'<div style="font-size:12px;color:var(--tx3);margin-top:4px">Foto (JPG, PNG) o tabla (CSV, XLS, XLSX, Numbers)</div>'
+    +'</div>'
+    +'<input type="file" id="imp-file" accept=".jpg,.jpeg,.png,.csv,.xls,.xlsx,.numbers" style="display:none" onchange="procesarArchivo(this)">'
+    +'<div id="imp-status" style="display:none;padding:12px;background:var(--sur2);border-radius:8px;font-size:13px;text-align:center;margin-bottom:12px"></div>'
+    +'<div id="imp-preview" style="display:none"></div>'
+    +'<div class="fa" id="imp-actions"><button class="btn bs" onclick="closeM()">Cancelar</button></div>');
+}
+
+function procesarArchivo(input){
+  var file = input.files[0];
+  if(!file) return;
+  var status = document.getElementById('imp-status');
+  var drop = document.getElementById('imp-drop');
+  drop.innerHTML = '<div style="font-size:13px;color:var(--tx2)">📄 '+file.name+'</div>';
+  status.style.display='block';
+  status.innerHTML='⏳ Procesando con IA... puede tardar unos segundos';
+
+  var reader = new FileReader();
+  var isImage = file.type.startsWith('image/');
+  
+  if(isImage){
+    reader.onload = function(e){
+      var b64 = e.target.result.split(',')[1];
+      var mediaType = file.type;
+      enviarAIA(null, b64, mediaType);
+    };
+    reader.readAsDataURL(file);
+  } else {
+    // For CSV/Excel read as text
+    reader.onload = function(e){
+      var text = e.target.result;
+      enviarAIA(text, null, null);
+    };
+    reader.readAsText(file, 'UTF-8');
+  }
+}
+
+function enviarAIA(texto, imagenB64, mediaType){
+  var status = document.getElementById('imp-status');
+  var actos = sortedActos();
+  var clientes = DB.arr('clientes');
+  var sucursales = DB.arr('sucursales');
+  
+  var prompt = [
+    'Eres un asistente que extrae datos de actividad medica.',
+    'ACTOS MEDICOS: ' + actos.map(function(a){ return a.nombre+'='+a.id+'('+a.precio+'eur)'; }).join(', '),
+    'CLIENTES: ' + clientes.map(function(c){ return c.nombre+'='+c.id; }).join(', '),
+    'SUCURSALES: ' + sucursales.map(function(s){ return s.nombre+'='+s.id+'(cli:'+s.clientes[0]+')'; }).join(', '),
+    'Extrae todos los dias con actividad. Para cada dia indica:',
+    'fecha YYYY-MM-DD (anio=' + new Date().getFullYear() + '), sucursal_id, cliente_id, actos:{id:cantidad}, obs.',
+    'Responde SOLO JSON: {"dias":[{"fecha":"YYYY-MM-DD","sucursal_id":"s1","cliente_id":"c1","actos":{"a1":3},"obs":""}]}'
+  ].join('\n');
+
+  var messages;
+  if(imagenB64){
+    messages = [{
+      role: 'user',
+      content: [
+        {type:'image', source:{type:'base64', media_type:mediaType, data:imagenB64}},
+        {type:'text', text:prompt}
+      ]
+    }];
+  } else {
+    messages = [{
+      role: 'user',
+      content: prompt + '\n\nDATOS DE LA TABLA:\n' + texto
+    }];
+  }
+
+  fetch('/api/ia/import', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({messages: messages})
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(data){
+    if(data.error){ throw new Error(data.error.message); }
+    var text = data.content[0].text;
+    // Extract JSON
+    var jsonMatch = text.match(/\{[\s\S]*\}/);
+    if(!jsonMatch) throw new Error('No se encontró JSON en la respuesta');
+    var result = JSON.parse(jsonMatch[0]);
+    mostrarPreview(result.dias||[]);
+  })
+  .catch(function(e){
+    status.innerHTML='❌ Error: '+e.message;
+    status.style.background='var(--rel)';
+    status.style.color='var(--re)';
+  });
+}
+
+function mostrarPreview(dias){
+  var status = document.getElementById('imp-status');
+  var preview = document.getElementById('imp-preview');
+  var actions = document.getElementById('imp-actions');
+  
+  if(!dias.length){
+    status.innerHTML='⚠️ No se encontraron datos de actividad en el archivo';
+    return;
+  }
+  
+  status.innerHTML='✅ Se encontraron <strong>'+dias.length+' días</strong> con actividad';
+  status.style.background='var(--grl)';
+  status.style.color='var(--gr)';
+  
+  var rows = dias.map(function(d){
+    var actList = sortedActos().filter(function(a){ return (d.actos[a.id]||0)>0; })
+      .map(function(a){ return a.nombre+': '+d.actos[a.id]; }).join(', ');
+    var total = 0;
+    Object.keys(d.actos||{}).forEach(function(aid){ total += (d.actos[aid]||0)*PA(aid); });
+    return '<tr><td>'+Dt(d.fecha)+'</td><td>'+NS(d.sucursal_id||'')+'</td><td>'+NC(d.cliente_id||'')+'</td><td style="font-size:12px">'+actList+'</td><td class="mono">'+M(total)+' €</td></tr>';
+  }).join('');
+  
+  preview.style.display='block';
+  preview.innerHTML='<div style="max-height:280px;overflow-y:auto;border:1px solid var(--bor);border-radius:8px;margin-bottom:12px">'
+    +'<table style="width:100%"><thead><tr><th style="padding:8px;background:var(--sur2);font-size:11px">Fecha</th><th style="padding:8px;background:var(--sur2);font-size:11px">Sucursal</th><th style="padding:8px;background:var(--sur2);font-size:11px">Cliente</th><th style="padding:8px;background:var(--sur2);font-size:11px">Actos</th><th style="padding:8px;background:var(--sur2);font-size:11px">Total</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+  
+  // Store dias for import
+  window._diasImport = dias;
+  
+  actions.innerHTML='<button class="btn bs" onclick="closeM()">Cancelar</button>'
+    +'<button class="btn bp" onclick="confirmarImport()">Importar '+dias.length+' días</button>';
+}
+
+function confirmarImport(){
+  var dias = window._diasImport||[];
+  if(!dias.length){ closeM(); return; }
+  
+  var nuevos = dias.map(function(d){
+    var actosMap = {};
+    Object.keys(d.actos||{}).forEach(function(k){ 
+      if((d.actos[k]||0)>0) actosMap[k]=d.actos[k]; 
+    });
+    var total=0; Object.keys(actosMap).forEach(function(aid){total+=(actosMap[aid]||0)*PA(aid);});
+    return {
+      id:uid(), fecha:d.fecha,
+      sucursal:d.sucursal_id||'', cliente:d.cliente_id||'',
+      actos:actosMap, obs:d.obs||'', total:total
+    };
+  });
+  
+  DB.save('dias', DB.arr('dias').concat(nuevos));
+  closeM();
+  toast(nuevos.length+' días importados ✓','tok');
+  badge();
+  if(PAGE==='registro') setTimeout(initReg,10);
+  if(PAGE==='actividad') go('actividad');
+  if(PAGE==='dashboard') go('dashboard');
+}
+
 // NAVIGATION
 var PAGE='', ACT_MES=CM(), FAC_MES=CM();
 function go(page){
@@ -380,7 +537,7 @@ function pgReg(){
   var hoy=new Date().toISOString().slice(0,10);
   var sopts=suc.map(function(s){return '<option value="'+s.id+'">'+s.nombre+'</option>';}).join('');
   var copts=cli.map(function(c){return '<option value="'+c.id+'">'+c.nombre+'</option>';}).join('');
-  return '<div class="hdr"><div><div class="htit">Registrar actividad</div><div class="hsub">Un bloque por día y clínica — rellena solo las cantidades</div></div></div><div class="cnt"><div class="rw"><div class="rt"><div class="rf"><label>Fecha</label><input type="date" id="rfecha" value="'+hoy+'"></div><div class="rf"><label>Sucursal / Clínica</label><select id="rsuc">'+sopts+'</select></div><div class="rf"><label>Cliente</label><select id="rcli">'+copts+'</select></div></div><table><thead><tr><th style="width:40%">Acto médico</th><th>Código</th><th>Precio</th><th style="width:100px;text-align:center">Cantidad</th><th style="text-align:right">Subtotal</th></tr></thead><tbody id="rtbody"></tbody></table><div style="padding:12px 20px;border-top:1px solid var(--bor);background:var(--sur2)"><div class="fg" style="margin-bottom:0"><label>Notas del día (opcional)</label><input type="text" id="robs" placeholder="Observaciones de esta sesión..."></div></div><div class="rb"><button class="btn bg sm" onclick="regLimpiar()">Limpiar</button><div style="display:flex;align-items:center;gap:14px"><span style="font-size:13px;color:var(--tx2)">Total: <strong class="mono" id="rgtot">0,00 €</strong></span><button class="btn bp" onclick="regGuardar()">Guardar día</button></div></div></div></div>';
+  return '<div class="hdr"><div><div class="htit">Registrar actividad</div><div class="hsub">Manual o importa desde foto / tabla</div></div><div class="hact"><button class="btn bs" onclick="abrirImport()">📎 Importar foto o tabla</button></div></div><div class="cnt"><div class="rw"><div class="rt"><div class="rf"><label>Fecha</label><input type="date" id="rfecha" value="'+hoy+'"></div><div class="rf"><label>Sucursal / Clínica</label><select id="rsuc">'+sopts+'</select></div><div class="rf"><label>Cliente</label><select id="rcli">'+copts+'</select></div></div><table><thead><tr><th style="width:40%">Acto médico</th><th>Código</th><th>Precio</th><th style="width:100px;text-align:center">Cantidad</th><th style="text-align:right">Subtotal</th></tr></thead><tbody id="rtbody"></tbody></table><div style="padding:12px 20px;border-top:1px solid var(--bor);background:var(--sur2)"><div class="fg" style="margin-bottom:0"><label>Notas del día (opcional)</label><input type="text" id="robs" placeholder="Observaciones de esta sesión..."></div></div><div class="rb"><button class="btn bg sm" onclick="regLimpiar()">Limpiar</button><div style="display:flex;align-items:center;gap:14px"><span style="font-size:13px;color:var(--tx2)">Total: <strong class="mono" id="rgtot">0,00 €</strong></span><button class="btn bp" onclick="regGuardar()">Guardar día</button></div></div></div></div>';
 }
 function initReg(){ regBuildTabla(); }
 function regBuildTabla(){
