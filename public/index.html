@@ -315,16 +315,173 @@ document.getElementById('OV').addEventListener('click', function(e){
 // ── IMPORTACIÓN IA ───────────────────────────────────────────────────────────
 function abrirImport(){
   openM('<h2>Importar actividad</h2>'
-    +'<p style="font-size:13px;color:var(--tx2);margin-bottom:16px">Sube una foto de tu hoja de actividad o un archivo Excel/Numbers. La IA extraerá los datos automáticamente.</p>'
-    +'<div style="border:2px dashed var(--bor);border-radius:10px;padding:30px;text-align:center;margin-bottom:16px;cursor:pointer" onclick="document.getElementById(&quot;imp-file&quot;).click()" id="imp-drop">'
-    +'<div style="font-size:32px;margin-bottom:8px">📎</div>'
-    +'<div style="font-size:14px;font-weight:500;color:var(--tx)">Haz clic para seleccionar archivo</div>'
-    +'<div style="font-size:12px;color:var(--tx3);margin-top:4px">Foto (JPG, PNG) o tabla (CSV, XLS, XLSX, Numbers)</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">'
+    +'<div style="border:2px dashed var(--ac);border-radius:10px;padding:20px;text-align:center;cursor:pointer;background:var(--acl)" onclick="document.getElementById(\'imp-file-tpl\').click()">'
+    +'<div style="font-size:28px;margin-bottom:6px">📊</div>'
+    +'<div style="font-size:13px;font-weight:600;color:var(--tx)">Plantilla Numbers/Excel</div>'
+    +'<div style="font-size:11px;color:var(--tx2);margin-top:3px">Importación directa exacta</div>'
     +'</div>'
-    +'<input type="file" id="imp-file" accept=".jpg,.jpeg,.png,.csv,.xls,.xlsx,.numbers" style="display:none" onchange="procesarArchivo(this)">'
+    +'<div style="border:2px dashed var(--bor);border-radius:10px;padding:20px;text-align:center;cursor:pointer" onclick="document.getElementById(\'imp-file-foto\').click()">'
+    +'<div style="font-size:28px;margin-bottom:6px">📸</div>'
+    +'<div style="font-size:13px;font-weight:600;color:var(--tx)">Foto / imagen</div>'
+    +'<div style="font-size:11px;color:var(--tx2);margin-top:3px">Procesada con IA</div>'
+    +'</div>'
+    +'</div>'
+    +'<input type="file" id="imp-file-tpl" accept=".xlsx,.xls,.csv" style="display:none" onchange="procesarPlantilla(this)">'
+    +'<input type="file" id="imp-file-foto" accept=".jpg,.jpeg,.png,.webp" style="display:none" onchange="procesarFoto(this)">'
     +'<div id="imp-status" style="display:none;padding:12px;background:var(--sur2);border-radius:8px;font-size:13px;text-align:center;margin-bottom:12px"></div>'
     +'<div id="imp-preview" style="display:none"></div>'
     +'<div class="fa" id="imp-actions"><button class="btn bs" onclick="closeM()">Cancelar</button></div>');
+}
+
+function procesarPlantilla(input){
+  var file = input.files[0];
+  if(!file) return;
+  var status = document.getElementById('imp-status');
+  status.style.display='block';
+  status.style.background='var(--sur2)';
+  status.style.color='var(--tx)';
+  status.innerHTML='⏳ Leyendo plantilla...';
+
+  var reader = new FileReader();
+  reader.onload = function(e){
+    try {
+      // Parse as CSV-like (xlsx converted to text by browser)
+      // We'll use a simple approach: read as binary and parse with basic xlsx parser
+      var data = e.target.result;
+      parsePlantillaXLSX(data, file.name);
+    } catch(err) {
+      status.innerHTML='❌ Error al leer el archivo: '+err.message;
+      status.style.background='var(--rel)';
+      status.style.color='var(--re)';
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function parsePlantillaXLSX(buffer, filename){
+  var status = document.getElementById('imp-status');
+  // Load SheetJS from CDN if not available
+  if(typeof XLSX === 'undefined'){
+    status.innerHTML='⏳ Cargando librería de lectura Excel...';
+    var script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    script.onload = function(){ parsePlantillaXLSX(buffer, filename); };
+    script.onerror = function(){ 
+      status.innerHTML='❌ No se pudo cargar la librería. Comprueba tu conexión.';
+      status.style.background='var(--rel)';
+      status.style.color='var(--re)';
+    };
+    document.head.appendChild(script);
+    return;
+  }
+
+  var wb = XLSX.read(buffer, {type:'array'});
+  var allDias = [];
+  var errors = [];
+
+  // Process each sheet
+  wb.SheetNames.forEach(function(sheetName){
+    var ws = wb.Sheets[sheetName];
+    var data = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+    
+    // Find the header row (row with 'fecha' in first column)
+    var headerRowIdx = -1;
+    var nameRowIdx = -1;
+    var clienteId = '';
+    
+    // Look for client_id in the sheet (row with 'cliente_id')
+    for(var i=0; i<Math.min(10,data.length); i++){
+      if(String(data[i][0]).toLowerCase().includes('cliente_id')){
+        clienteId = String(data[i][1]||'').trim();
+      }
+      if(String(data[i][0]).toLowerCase() === 'fecha'){
+        headerRowIdx = i;
+      }
+    }
+    
+    if(headerRowIdx === -1) return; // skip sheet without headers
+    
+    var headers = data[headerRowIdx].map(function(h){ return String(h||'').trim(); });
+    
+    // Find column indices
+    var fechaCol = headers.indexOf('fecha');
+    var sucCol = headers.indexOf('sucursal_id');
+    var obsCol = headers.indexOf('obs');
+    
+    if(fechaCol === -1 || sucCol === -1) return;
+    
+    // Find acto columns (columns where header matches an acto ID)
+    var actoIds = DB.arr('actos').map(function(a){ return a.id; });
+    var actoCols = {};
+    headers.forEach(function(h, ci){
+      if(actoIds.indexOf(h) > -1) actoCols[h] = ci;
+    });
+    
+    if(Object.keys(actoCols).length === 0) return;
+    
+    // Process data rows (skip header rows, stop at empty fecha)
+    var dataStart = headerRowIdx + 1;
+    // Skip name row if exists
+    if(data[dataStart] && String(data[dataStart][fechaCol]||'').toLowerCase().includes('fecha')) dataStart++;
+    
+    for(var ri = dataStart; ri < data.length; ri++){
+      var row = data[ri];
+      var fecha = String(row[fechaCol]||'').trim();
+      
+      // Skip empty rows or reference rows
+      if(!fecha || fecha.length < 8) continue;
+      if(!fecha.match(/^\d{4}-\d{2}-\d{2}$/)) continue;
+      
+      var sucId = String(row[sucCol]||'').trim();
+      if(!sucId) continue;
+      
+      var actosMap = {};
+      var hasActivity = false;
+      Object.keys(actoCols).forEach(function(aid){
+        var val = parseInt(row[actoCols[aid]])||0;
+        if(val > 0){ actosMap[aid] = val; hasActivity = true; }
+      });
+      
+      if(!hasActivity) continue;
+      
+      var obs = String(row[obsCol]||'').trim();
+      var total = 0;
+      Object.keys(actosMap).forEach(function(aid){ total += (actosMap[aid]||0)*PA(aid); });
+      
+      // Use clienteId from sheet or detect from sucursal
+      var cid = clienteId;
+      if(!cid){
+        var suc = DB.arr('sucursales').find(function(s){ return s.id === sucId; });
+        cid = suc && suc.clientes && suc.clientes[0] ? suc.clientes[0] : '';
+      }
+      
+      allDias.push({fecha:fecha, sucursal_id:sucId, cliente_id:cid, actos:actosMap, obs:obs, total:total});
+    }
+  });
+
+  if(!allDias.length){
+    status.innerHTML='⚠️ No se encontraron datos en la plantilla. Comprueba que has rellenado fechas en formato AAAA-MM-DD y sucursal_id.';
+    status.style.background='var(--aml)';
+    status.style.color='var(--am)';
+    return;
+  }
+  
+  mostrarPreview(allDias);
+}
+
+function procesarFoto(input){
+  var file = input.files[0];
+  if(!file) return;
+  var status = document.getElementById('imp-status');
+  status.style.display='block';
+  status.innerHTML='⏳ Procesando imagen con IA...';
+  var reader = new FileReader();
+  reader.onload = function(e){
+    var b64 = e.target.result.split(',')[1];
+    enviarAIA(null, b64, file.type);
+  };
+  reader.readAsDataURL(file);
 }
 
 function procesarArchivo(input){
@@ -460,9 +617,20 @@ function confirmarImport(){
     };
   });
   
-  DB.save('dias', DB.arr('dias').concat(nuevos));
-  closeM();
-  toast(nuevos.length+' días importados ✓','tok');
+  // Use safeAppend to avoid overwriting concurrent changes
+  var pendientes = nuevos.slice();
+  function appendNext(){
+    if(!pendientes.length){
+      closeM();
+      toast(nuevos.length+' días importados ✓','tok');
+      badge();
+      if(PAGE==='actividad') go('actividad');
+      if(PAGE==='dashboard') go('dashboard');
+      return;
+    }
+    DB.safeAppend('dias', pendientes.shift(), appendNext);
+  }
+  appendNext();
   badge();
   if(PAGE==='registro') setTimeout(initReg,10);
   if(PAGE==='actividad') go('actividad');
@@ -584,9 +752,11 @@ function regGuardar(){
   var total=0;
   Object.keys(actosMap).forEach(function(aid){ total+=actosMap[aid]*PA(aid); });
   var dia={id:uid(),fecha:fecha,sucursal:sucursal,cliente:cliente,actos:actosMap,obs:obs,total:total};
-  DB.save('dias',DB.arr('dias').concat([dia]));
-  toast('Día guardado ✓','tok');
-  regLimpiar(); badge();
+  DB.safeAppend('dias', dia, function(){
+    toast('Día guardado ✓','tok');
+    badge();
+  });
+  regLimpiar();
 }
 
 // ── ACTIVIDAD ────────────────────────────────────────────────────────────────
@@ -624,8 +794,9 @@ function actFilt(){
 }
 function actDel(id){
   if(!confirm('¿Eliminar este día?')) return;
-  DB.save('dias',DB.arr('dias').filter(function(d){return d.id!==id;}));
-  toast('Eliminado'); go('actividad');
+  DB.safeDelete('dias', id, function(){
+    toast('Eliminado'); go('actividad');
+  });
 }
 function actEdit(id){
   var d=DB.arr('dias').find(function(x){return x.id===id;}); if(!d) return;
@@ -645,11 +816,10 @@ function actSave(id){
     if(q>0) actosMap[a.id]=q;
   });
   var total=0; Object.keys(actosMap).forEach(function(aid){total+=actosMap[aid]*PA(aid);});
-  DB.save('dias',DB.arr('dias').map(function(d){
-    if(d.id!==id) return d;
-    return {id:d.id,fecha:document.getElementById('edd').value,sucursal:document.getElementById('eds').value,cliente:document.getElementById('edc').value,actos:actosMap,obs:document.getElementById('edo').value,total:total};
-  }));
-  closeM(); toast('Actualizado ✓','tok'); go('actividad');
+  var updatedDia = {id:id,fecha:document.getElementById('edd').value,sucursal:document.getElementById('eds').value,cliente:document.getElementById('edc').value,actos:actosMap,obs:document.getElementById('edo').value,total:total};
+  DB.safeUpdate('dias', updatedDia, function(){
+    closeM(); toast('Actualizado ✓','tok'); go('actividad');
+  });
 }
 
 // ── FACTURAS ─────────────────────────────────────────────────────────────────
