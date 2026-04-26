@@ -214,7 +214,49 @@ var DB = {
   },
 
   arr: function(k){ return this.get(k)||[]; },
-  save: function(k,v){ this.set(k,v); }
+  save: function(k,v){ this.set(k,v); },
+  safeAppend: function(k, newItem, cb){
+    var self = this;
+    fetch('/api/data/'+k)
+      .then(function(r){ return r.json(); })
+      .then(function(serverData){
+        var current = Array.isArray(serverData) ? serverData : [];
+        var existingIds = {};
+        current.forEach(function(x){ if(x.id) existingIds[x.id]=true; });
+        if(!existingIds[newItem.id]){ current = current.concat([newItem]); }
+        else { current = current.map(function(x){ return x.id===newItem.id?newItem:x; }); }
+        self._cache[k] = current;
+        return fetch('/api/data/'+k, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({value:current})});
+      })
+      .then(function(){ if(cb) cb(); })
+      .catch(function(e){ console.error('safeAppend error:',e); if(cb) cb(); });
+  },
+  safeUpdate: function(k, updatedItem, cb){
+    var self = this;
+    fetch('/api/data/'+k)
+      .then(function(r){ return r.json(); })
+      .then(function(serverData){
+        var current = Array.isArray(serverData) ? serverData : [];
+        var merged = current.map(function(x){ return x.id===updatedItem.id?updatedItem:x; });
+        self._cache[k] = merged;
+        return fetch('/api/data/'+k, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({value:merged})});
+      })
+      .then(function(){ if(cb) cb(); })
+      .catch(function(e){ console.error('safeUpdate error:',e); if(cb) cb(); });
+  },
+  safeDelete: function(k, itemId, cb){
+    var self = this;
+    fetch('/api/data/'+k)
+      .then(function(r){ return r.json(); })
+      .then(function(serverData){
+        var current = Array.isArray(serverData) ? serverData : [];
+        var merged = current.filter(function(x){ return x.id!==itemId; });
+        self._cache[k] = merged;
+        return fetch('/api/data/'+k, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({value:merged})});
+      })
+      .then(function(){ if(cb) cb(); })
+      .catch(function(e){ console.error('safeDelete error:',e); if(cb) cb(); });
+  }
 };
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,5); }
 
