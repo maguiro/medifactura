@@ -649,11 +649,32 @@ function BEST(e) {
   var l = { borrador: 'Borrador', emitida: 'Emitida', pagada: 'Pagada' };
   return '<span class="bdg ' + (m[e]||'bgy') + '">' + (l[e]||e) + '</span>';
 }
-function NSEQ() {
-  var cfg = DB.get('cfg') || {};
-  var s = (DB.get('seq')||0) + 1;
-  DB.set('seq', s);
-  return (cfg.pref||'FAC') + '-' + new Date().getFullYear() + '-' + ('000' + s).slice(-4);
+// Prefix map by client/sucursal
+var PREFIXES = {
+  'c1': 'EM',   // Endos Medicina SLP
+  'c2': 'ES',   // Endumsalut SLP
+  // Clinica Londres by sucursal:
+  's9':  'ENT', // CL Entenza
+  's10': 'BON', // CL Bonanova
+  's11': 'ROS', // CL Rosello
+  's12': 'SAB', // CL Sabadell
+  's13': 'TAR', // CL Tarragona
+};
+
+function NSEQ(clienteId, sucursalId) {
+  var anio = new Date().getFullYear();
+  // Determine prefix
+  var pref = 'FAC';
+  if (clienteId === 'c3' && sucursalId && PREFIXES[sucursalId]) {
+    pref = PREFIXES[sucursalId];
+  } else if (PREFIXES[clienteId]) {
+    pref = PREFIXES[clienteId];
+  }
+  // Get sequence key specific to this prefix+year
+  var seqKey = 'seq_' + pref + '_' + anio;
+  var s = (DB.get(seqKey)||0) + 1;
+  DB.set(seqKey, s);
+  return pref + anio + '-' + s;
 }
 
 // ── TOAST ─────────────────────────────────────────────────────────────────────
@@ -988,10 +1009,9 @@ function confirmarImport() {
     // Support both sucursal_id/cliente_id (from IA) and sucursal/cliente (from template)
     var suc = d.sucursal_id || d.sucursal || '';
     var cli = d.cliente_id || d.cliente || '';
-    if (!suc || !cli) { console.warn('Dia sin sucursal o cliente, ignorado:', d); return null; }
     return {id:uid(), fecha:d.fecha, sucursal:suc, cliente:cli, actos:am, obs:d.obs||'', total:tot};
   }).filter(function(x){ return x !== null; });
-  if (!items.length) { toast('⚠️ No se pudieron mapear los datos. Verifica sucursal y cliente.', 'ter'); return; }
+  if (!items.length) { toast('⚠️ Sin datos válidos', 'ter'); return; }
   var pending = items.slice();
   var total = items.length;
   function next() {
@@ -1021,7 +1041,7 @@ function pgAct() {
       return '<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--bor)"><span style="color:var(--tx2)">'+a.nombre+'</span><span class="mono" style="color:var(--tx)">'+d.actos[a.id]+' × '+M(a.precio)+' € = <strong>'+M(d.actos[a.id]*a.precio)+' €</strong></span></div>';
     }).join('');
     var obs = d.obs ? '<div style="margin-top:8px;padding:6px 10px;background:var(--aml);border-radius:6px;font-size:12px;color:var(--am)">📝 '+d.obs+'</div>' : '';
-    return '<div class="dcard"><div class="dcard-hdr"><div style="display:flex;align-items:center;gap:8px"><strong style="font-size:13px">'+Dt(d.fecha)+'</strong><span class="bdg bgy">'+NS(d.sucursal)+'</span><span class="bdg bbl">'+NC(d.cliente)+'</span></div><div style="display:flex;align-items:center;gap:8px"><strong class="mono">'+M(diaTotal(d))+' €</strong><button class="btn bg sm" onclick="actEdit(\''+d.id+'\')">Editar</button><button class="btn bd sm" onclick="actDel(\''+d.id+'\')">✕</button></div></div><div style="padding:0 16px 12px">'+al+obs+'</div></div>';
+    return '<div class="dcard"><div class="dcard-hdr"><div style="display:flex;align-items:center;gap:8px"><strong style="font-size:13px">'+Dt(d.fecha)+'</strong><span class="bdg bgy">'+(NS(d.sucursal)||'⚠️ Sin sucursal')+'</span><span class="bdg bbl">'+(NC(d.cliente)||'⚠️ Sin cliente')+'</span></div><div style="display:flex;align-items:center;gap:8px"><strong class="mono">'+M(diaTotal(d))+' €</strong><button class="btn bg sm" onclick="actEdit(\''+d.id+'\')">Editar</button><button class="btn bd sm" onclick="actDel(\''+d.id+'\')">✕</button></div></div><div style="padding:0 16px 12px">'+al+obs+'</div></div>';
   }).join('') || '<div class="emp"><div class="emp-i">📋</div><p>Sin registros para este período</p></div>';
   return '<div class="hdr"><div><div class="htit">Actividad</div></div><div class="hact"><div class="mnav"><button class="btn bg sm" onclick="ACT_MES=AM(ACT_MES,-1);go(\'actividad\')">‹</button><span>'+ML(ACT_MES)+'</span><button class="btn bg sm" onclick="ACT_MES=AM(ACT_MES,1);go(\'actividad\')">›</button></div></div></div>'
     +'<div class="cnt"><div class="flt"><select class="fsel" id="fas" onchange="actFilt()">'+so+'</select><select class="fsel" id="fac" onchange="actFilt()">'+co+'</select><span style="font-size:13px;color:var(--tx2)">'+dias.length+' días — <span class="mono">'+M(tot)+' €</span></span></div><div id="actcards">'+cards+'</div></div>';
@@ -1035,7 +1055,7 @@ function actFilt(){
   var cards=dias.map(function(d){
     var al=sortedActos().filter(function(a){return (d.actos[a.id]||0)>0;}).map(function(a){return '<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--bor)"><span style="color:var(--tx2)">'+a.nombre+'</span><span class="mono" style="color:var(--tx)">'+d.actos[a.id]+' × '+M(a.precio)+' € = <strong>'+M(d.actos[a.id]*a.precio)+' €</strong></span></div>';}).join('');
     var obs=d.obs?'<div style="margin-top:8px;padding:6px 10px;background:var(--aml);border-radius:6px;font-size:12px;color:var(--am)">📝 '+d.obs+'</div>':'';
-    return '<div class="dcard"><div class="dcard-hdr"><div style="display:flex;align-items:center;gap:8px"><strong>'+Dt(d.fecha)+'</strong><span class="bdg bgy">'+NS(d.sucursal)+'</span><span class="bdg bbl">'+NC(d.cliente)+'</span></div><div style="display:flex;align-items:center;gap:8px"><strong class="mono">'+M(diaTotal(d))+' €</strong><button class="btn bg sm" onclick="actEdit(\''+d.id+'\')">Editar</button><button class="btn bd sm" onclick="actDel(\''+d.id+'\')">✕</button></div></div><div style="padding:0 16px 12px">'+al+obs+'</div></div>';
+    return '<div class="dcard"><div class="dcard-hdr"><div style="display:flex;align-items:center;gap:8px"><strong>'+Dt(d.fecha)+'</strong><span class="bdg bgy">'+(NS(d.sucursal)||'⚠️ Sin sucursal')+'</span><span class="bdg bbl">'+(NC(d.cliente)||'⚠️ Sin cliente')+'</span></div><div style="display:flex;align-items:center;gap:8px"><strong class="mono">'+M(diaTotal(d))+' €</strong><button class="btn bg sm" onclick="actEdit(\''+d.id+'\')">Editar</button><button class="btn bd sm" onclick="actDel(\''+d.id+'\')">✕</button></div></div><div style="padding:0 16px 12px">'+al+obs+'</div></div>';
   }).join('')||'<div class="emp"><p>Sin resultados</p></div>';
   var el=document.getElementById('actcards');if(el)el.innerHTML=cards;
 }
@@ -1070,9 +1090,32 @@ function pgFact(){
   var alrt=pend.length?'<div class="alrt aam" style="display:flex;align-items:center;justify-content:space-between;gap:10px"><span>⚠️ '+pend.length+' cliente(s) sin facturar</span><div style="display:flex;gap:6px">'+pend.map(function(c){return '<button class="btn bs sm" onclick="facGenOpen(\''+c+'\')">'+NC(c)+'</button>';}).join('')+'</div></div>':'';
   var rows=facts.map(function(f){return '<tr><td class="mono">'+f.num+'</td><td>'+NC(f.cliente)+'</td><td>'+ML(f.mes)+'</td><td>'+BEST(f.estado)+'</td><td class="mono">'+M(f.total)+' €</td><td class="tda"><button class="btn bg sm" onclick="vF(\''+f.id+'\')">Ver</button><button class="btn bs sm" onclick="facEdit(\''+f.id+'\')">Editar</button><button class="btn bgold sm" onclick="dlPDF(\''+f.id+'\')">PDF</button><button class="btn bd sm" onclick="facDel(\''+f.id+'\')">✕</button></td></tr>';}).join('')||'<tr><td colspan="6"><div class="emp"><div class="emp-i">📄</div><p>Sin facturas para '+ML(FAC_MES)+'</p></div></td></tr>';
   return '<div class="hdr"><div><div class="htit">Facturas</div></div><div class="hact"><div class="mnav"><button class="btn bg sm" onclick="FAC_MES=AM(FAC_MES,-1);go(\'facturas\')">‹</button><span>'+ML(FAC_MES)+'</span><button class="btn bg sm" onclick="FAC_MES=AM(FAC_MES,1);go(\'facturas\')">›</button></div><button class="btn bs" onclick="dlZipMes()">↓ ZIP mes</button><button class="btn bs" onclick="dlZipTrimOpen()">↓ ZIP trimestre</button><button class="btn bp" onclick="facNuevaOpen()">+ Nueva factura</button></div></div>'
-    +'<div class="cnt">'+alrt+'<div class="tw"><div class="th2"><h3>'+facts.length+' facturas — <span class="mono">'+M(tot)+' €</span></h3></div><table><thead><tr><th>Número</th><th>Cliente</th><th>Mes</th><th>Estado</th><th>Total</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+    +'<div class="cnt">'+alrt+'<div class="flt"><select class="fsel" id="ffcli" onchange="factFilt()"><option value="">Todos los clientes</option>'+DB.arr('clientes').map(function(c){return '<option value="'+c.id+'">'+c.nombre+'</option>';}).join('')+'</select><select class="fsel" id="ffsuc" onchange="factFilt()"><option value="">Todas las sucursales</option>'+DB.arr('sucursales').map(function(s){return '<option value="'+s.id+'">'+s.nombre+'</option>';}).join('')+'</select></div><div class="tw"><div class="th2"><h3 id="fact-count">'+facts.length+' facturas — <span class="mono">'+M(tot)+' €</span></h3></div><table><thead><tr><th>Número</th><th>Cliente</th><th>Mes</th><th>Estado</th><th>Total</th><th></th></tr></thead><tbody id="fact-tb">\'+rows+\'</tbody></table></div></div>';
 }
 
+function factFilt(){
+  var fc=document.getElementById('ffcli')&&document.getElementById('ffcli').value;
+  var fs=document.getElementById('ffsuc')&&document.getElementById('ffsuc').value;
+  var all=DB.arr('facturas').filter(function(f){
+    if(f.mes!==FAC_MES) return false;
+    if(fc&&f.cliente!==fc) return false;
+    if(fs){var dd=DB.arr('dias').filter(function(d){return d.fecha&&d.fecha.startsWith(f.mes)&&d.cliente===f.cliente&&d.sucursal===fs;});if(!dd.length)return false;}
+    return true;
+  });
+  var tot=all.reduce(function(s,f){return s+f.total;},0);
+  var rows=all.map(function(f){
+    var fid=f.id;
+    return '<tr><td class="mono">'+f.num+'</td><td>'+NC(f.cliente)+'</td><td>'+ML(f.mes)+'</td><td>'+BEST(f.estado)+'</td><td class="mono">'+M(f.total)+' €</td>'
+      +'<td class="tda">'
+      +'<button class="btn bg sm" onclick="vF(this.dataset.id)" data-id="'+fid+'">Ver</button>'
+      +'<button class="btn bs sm" onclick="facEdit(this.dataset.id)" data-id="'+fid+'">Editar</button>'
+      +'<button class="btn bgold sm" onclick="dlPDF(this.dataset.id)" data-id="'+fid+'">PDF</button>'
+      +'<button class="btn bd sm" onclick="facDel(this.dataset.id)" data-id="'+fid+'">✕</button>'
+      +'</td></tr>';
+  }).join('')||'<tr><td colspan="6"><div class="emp"><p>Sin resultados</p></div></td></tr>';
+  var tb=document.getElementById('fact-tb');if(tb)tb.innerHTML=rows;
+  var h=document.getElementById('fact-cnt');if(h)h.innerHTML=all.length+' facturas — <span class="mono">'+M(tot)+' €</span>';
+}
 function facGenOpen(cid){
   var suc=DB.arr('sucursales');
   var mes=FAC_MES;
@@ -1089,6 +1132,7 @@ function facNuevaOpen(){
 function _facGen(cid,mes,agrup){
   var dias=DB.arr('dias').filter(function(d){return d.fecha&&d.fecha.startsWith(mes)&&d.cliente===cid;});
   if(agrup!=='todas')dias=dias.filter(function(d){return d.sucursal===agrup;});
+  var diasFilt=dias;
   if(!dias.length){toast('⚠️ Sin actividad para este período','ter');return;}
   var at={};
   dias.forEach(function(d){Object.keys(d.actos||{}).forEach(function(aid){at[aid]=(at[aid]||0)+(d.actos[aid]||0);});});
@@ -1097,7 +1141,8 @@ function _facGen(cid,mes,agrup){
   var cfg=DB.get('cfg')||{};
   var ivap=cfg.iva!=null?cfg.iva:0;
   var ivai=sub*ivap/100;
-  var f={id:uid(),num:NSEQ(),cliente:cid,mes:mes,femision:lastDay(mes),fvenc:'',estado:'borrador',sub:sub,ivap:ivap,ivai:ivai,total:sub+ivai,lineas:lineas,obs:''};
+  var sucId=agrup!=='todas'?agrup:(diasFilt[0]&&diasFilt[0].sucursal||'');
+  var f={id:uid(),num:NSEQ(cid,sucId),cliente:cid,mes:mes,femision:lastDay(mes),fvenc:'',estado:'borrador',sub:sub,ivap:ivap,ivai:ivai,total:sub+ivai,lineas:lineas,obs:''};
   DB.safeAppend('facturas',f,function(){closeM();toast('✓ Factura creada: '+f.num,'tok');go('facturas');badge();});
 }
 
