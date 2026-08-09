@@ -1088,12 +1088,16 @@ function _fillActivityFromIA(data, res) {
   
   var previewHTML = '<div style="margin-top:12px;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:16px">'
     + '<div style="font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">✓ Datos detectados — revisa y confirma</div>'
-    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">'
     + '<div><label style="display:block;font-size:11px;color:var(--text3);margin-bottom:4px">FECHA</label>'
     + '<input type="date" id="ia-date" value="'+(data.date||'')+'" style="width:100%;padding:7px 10px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px"></div>'
     + '<div><label style="display:block;font-size:11px;color:var(--text3);margin-bottom:4px">CLÍNICA</label>'
-    + '<select id="ia-clinic" style="width:100%;padding:7px 10px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px">'+clinicOpts+'</select></div>'
+    + '<select id="ia-clinic" onchange="iaClinicChange()" style="width:100%;padding:7px 10px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px">'+clinicOpts+'</select></div>'
     + '</div>'
+    + '<div style="margin-bottom:12px"><label style="display:block;font-size:11px;color:var(--text3);margin-bottom:4px">SUCURSAL</label>'
+    + '<select id="ia-branch" style="width:100%;padding:7px 10px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px"><option value="">— Sin sucursal —</option>'
+    + (data.clinic ? (function(){ var cl=DB.clinics.find(function(c){return c.name===data.clinic;}); return cl ? cl.branches.map(function(b){return '<option value="'+b+'"'+(b===data.branch?' selected':'')+'>'+b+'</option>';}).join('') : ''; })() : '')
+    + '</select></div>'
     + '<div style="font-size:11px;color:var(--text3);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">ACTOS DETECTADOS</div>'
     + '<div style="display:grid;grid-template-columns:1fr 70px 80px 80px;gap:6px;margin-bottom:4px">'
     + '<span style="font-size:10px;color:var(--text3)">Acto</span><span style="font-size:10px;color:var(--text3);text-align:center">Cant.</span><span style="font-size:10px;color:var(--text3);text-align:right">Precio</span><span></span>'
@@ -1115,6 +1119,14 @@ function _fillActivityFromIA(data, res) {
   });
 }
 
+function iaClinicChange() {
+  var clinicName = document.getElementById('ia-clinic') ? document.getElementById('ia-clinic').value : '';
+  var cl = DB.clinics.find(function(c){ return c.name === clinicName; });
+  var sel = document.getElementById('ia-branch');
+  if(!sel) return;
+  sel.innerHTML = '<option value="">— Sin sucursal —</option>' + (cl ? cl.branches.map(function(b){ return '<option value="'+b+'">'+b+'</option>'; }).join('') : '');
+}
+
 function _iaCancel() {
   var res = document.getElementById('file-result');
   if(res) res.innerHTML = '';
@@ -1125,6 +1137,7 @@ function _iaCancel() {
 function _iaConfirm() {
   var date = document.getElementById('ia-date') ? document.getElementById('ia-date').value : '';
   var clinic = document.getElementById('ia-clinic') ? document.getElementById('ia-clinic').value : '';
+  var branch = document.getElementById('ia-branch') ? document.getElementById('ia-branch').value : '';
   if(!date) { toast('Indica la fecha', 'error'); return; }
 
   // Gather lines from preview
@@ -1142,7 +1155,7 @@ function _iaConfirm() {
   if(!lines.length) { toast('No hay actos con cantidad', 'error'); return; }
   
   var total = lines.reduce(function(a,l){return a+l.qty*l.price;},0);
-  DB.sessions.push({id:uid(), date:date, clinic:clinic, branch:'', lines:lines, others:[], notes:'', files:[], total:total, createdAt:new Date().toISOString()});
+  DB.sessions.push({id:uid(), date:date, clinic:clinic, branch:branch, lines:lines, others:[], notes:'', files:[], total:total, createdAt:new Date().toISOString()});
   saveData().then(function(){
     _iaCancel();
     toast('Actividad guardada desde foto ✓');
