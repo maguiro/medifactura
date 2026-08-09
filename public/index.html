@@ -1065,33 +1065,89 @@ function handleFile(inp) {
 }
 
 function _fillActivityFromIA(data, res) {
-  // Switch to manual tab so user can see and save
-  var manualTab = document.querySelector('#page-activity .tab');
-  if(manualTab) { setActTab('manual', manualTab); }
-  // Fill date
-  if(data.date) { var di=document.getElementById('act-date'); if(di) di.value=data.date; }
-  // Fill clinic
-  if(data.clinic) { var ci=document.getElementById('act-clinic'); if(ci){ Array.from(ci.options).forEach(function(o){if(o.value===data.clinic)o.selected=true;}); fillBranchSel(data.clinic); } }
-  // Fill branch after short delay
-  setTimeout(function(){
-    if(data.branch){ var bi=document.getElementById('act-branch'); if(bi){ Array.from(bi.options).forEach(function(o){if(o.value===data.branch)o.selected=true;}); } }
-  }, 100);
-  // Fill notes
-  if(data.notes){ var ni=document.getElementById('act-notes'); if(ni) ni.value=data.notes; }
-  // Fill procedure lines
-  var tb = document.getElementById('act-proc-rows');
-  if(tb) tb.innerHTML='';
-  var procIdx = 0;
+  var prog = document.getElementById('ia-progress'); if(prog) prog.style.display='none';
+  
+  // Build editable preview card in the photo tab
+  var clinicOpts = '<option value="">— No detectado —</option>' + DB.clinics.map(function(c){
+    return '<option value="'+c.name+'"'+(c.name===data.clinic?' selected':'')+'>'+c.name+'</option>';
+  }).join('');
+  
+  var linesHTML = '';
   if(data.lines && data.lines.length) {
-    data.lines.forEach(function(l){
-      var clinic = document.getElementById('act-clinic') ? document.getElementById('act-clinic').value : '';
-      var price = l.price && l.price>0 ? l.price : getProcPrice(l.proc, clinic);
-      smAddProcRowWith(l.proc, l.qty, price);
+    data.lines.forEach(function(l, i){
+      var price = l.price && l.price>0 ? l.price : getProcPrice(l.proc, data.clinic||'');
+      linesHTML += '<div style="display:grid;grid-template-columns:1fr 70px 80px 80px;gap:6px;margin-bottom:6px;align-items:center">'
+        + '<input type="text" value="'+l.proc+'" id="ia-proc-'+i+'" placeholder="Acto" style="padding:6px 8px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px">'
+        + '<input type="number" value="'+l.qty+'" id="ia-qty-'+i+'" min="0" style="padding:6px 8px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px;text-align:center" placeholder="Cant.">'
+        + '<input type="number" value="'+price+'" id="ia-price-'+i+'" min="0" step="0.01" style="padding:6px 8px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px;text-align:right" placeholder="Precio">'
+        + '<button class="ia-del-btn" data-row="'+i+'" style="padding:4px 8px;border:1px solid var(--border2);background:transparent;color:var(--danger);border-radius:6px;cursor:pointer;font-size:14px">✕</button>'
+        + '</div>';
+      linesHTML = linesHTML.replace('<div style="display:grid', '<div id="ia-row-'+i+'" style="display:grid');
     });
   }
-  recalcSmTotal();
-  res.innerHTML = (res.innerHTML||'').replace(/<div id="ia-status".*?<\/div>/s,'')
-    + '<div style="padding:10px;background:var(--bg3);border-radius:8px;font-size:13px;color:var(--accent);margin-top:8px">✓ Datos extraídos — revisa y guarda</div>';
+  
+  var previewHTML = '<div style="margin-top:12px;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:16px">'
+    + '<div style="font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">✓ Datos detectados — revisa y confirma</div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">'
+    + '<div><label style="display:block;font-size:11px;color:var(--text3);margin-bottom:4px">FECHA</label>'
+    + '<input type="date" id="ia-date" value="'+(data.date||'')+'" style="width:100%;padding:7px 10px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px"></div>'
+    + '<div><label style="display:block;font-size:11px;color:var(--text3);margin-bottom:4px">CLÍNICA</label>'
+    + '<select id="ia-clinic" style="width:100%;padding:7px 10px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px">'+clinicOpts+'</select></div>'
+    + '</div>'
+    + '<div style="font-size:11px;color:var(--text3);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">ACTOS DETECTADOS</div>'
+    + '<div style="display:grid;grid-template-columns:1fr 70px 80px 80px;gap:6px;margin-bottom:4px">'
+    + '<span style="font-size:10px;color:var(--text3)">Acto</span><span style="font-size:10px;color:var(--text3);text-align:center">Cant.</span><span style="font-size:10px;color:var(--text3);text-align:right">Precio</span><span></span>'
+    + '</div>'
+    + '<div id="ia-lines">'+linesHTML+'</div>'
+    + '<div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">'
+    + '<button onclick="_iaCancel()" style="padding:7px 14px;border:1px solid var(--border2);background:transparent;color:var(--text2);border-radius:7px;cursor:pointer;font-size:13px">Cancelar</button>'
+    + '<button onclick="_iaConfirm()" style="padding:7px 14px;background:var(--accent);color:#000;border:none;border-radius:7px;font-weight:600;font-size:13px;cursor:pointer">Guardar actividad</button>'
+    + '</div></div>';
+
+  var oldImg = res.querySelector('img');
+  res.innerHTML = (oldImg ? '<img src="'+oldImg.src+'" style="max-width:100%;border-radius:8px;margin-bottom:10px">' : '') + previewHTML;
+  // Add delete handlers
+  res.querySelectorAll('.ia-del-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var row = document.getElementById('ia-row-'+this.dataset.row);
+      if(row) row.remove();
+    });
+  });
+}
+
+function _iaCancel() {
+  var res = document.getElementById('file-result');
+  if(res) res.innerHTML = '';
+  var inp = document.getElementById('file-inp');
+  if(inp) inp.value = '';
+}
+
+function _iaConfirm() {
+  var date = document.getElementById('ia-date') ? document.getElementById('ia-date').value : '';
+  var clinic = document.getElementById('ia-clinic') ? document.getElementById('ia-clinic').value : '';
+  if(!date) { toast('Indica la fecha', 'error'); return; }
+
+  // Gather lines from preview
+  var lines = [];
+  var i = 0;
+  while(true) {
+    var row = document.getElementById('ia-row-'+i);
+    if(!row) break;
+    var proc = document.getElementById('ia-proc-'+i) ? document.getElementById('ia-proc-'+i).value.trim() : '';
+    var qty = parseFloat(document.getElementById('ia-qty-'+i) ? document.getElementById('ia-qty-'+i).value : 0) || 0;
+    var price = parseFloat(document.getElementById('ia-price-'+i) ? document.getElementById('ia-price-'+i).value : 0) || getProcPrice(proc, clinic);
+    if(proc && qty > 0) lines.push({proc:proc, qty:qty, price:price});
+    i++;
+  }
+  if(!lines.length) { toast('No hay actos con cantidad', 'error'); return; }
+  
+  var total = lines.reduce(function(a,l){return a+l.qty*l.price;},0);
+  DB.sessions.push({id:uid(), date:date, clinic:clinic, branch:'', lines:lines, others:[], notes:'', files:[], total:total, createdAt:new Date().toISOString()});
+  saveData().then(function(){
+    _iaCancel();
+    toast('Actividad guardada desde foto ✓');
+    renderDashboard();
+  });
 }
 function renderClinicCards() {
   var c = document.getElementById('clinic-cards'); if (!c) return;
