@@ -194,6 +194,7 @@ textarea{resize:vertical;min-height:72px}
             <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Clínica</th><th>Sucursal</th><th>Importe</th></tr></thead><tbody id="d-recent"></tbody></table></div>
           </div>
         </div>
+        <div id="voice-result" style="font-size:12px;color:var(--text3);margin-top:6px;padding:0 4px;min-height:16px"></div>
       </div>
       <div id="dash-actividad" style="display:none">
         <div class="filter-row">
@@ -239,7 +240,6 @@ textarea{resize:vertical;min-height:72px}
         <div class="actions-row">
           <button class="btn" onclick="clearActivity()"><i class="ti ti-x"></i>Limpiar</button>
           <button id="voice-btn" class="btn" onclick="startVoiceInput()" title="Dictar actividad por voz"><i class="ti ti-microphone"></i>🎤 Voz</button>
-          <div id="voice-result" style="font-size:12px;color:var(--text3);margin-top:4px;max-width:300px"></div>
           <button class="btn btn-primary" onclick="saveActivity()"><i class="ti ti-device-floppy"></i>Guardar actividad</button>
         </div>
       </div>
@@ -253,6 +253,10 @@ textarea{resize:vertical;min-height:72px}
             <input type="file" id="file-inp" accept="image/*,.pdf" style="display:none" onchange="handleFile(this)">
           </div>
           <div id="file-result" style="margin-top:14px"></div>
+          <div id="ia-progress" style="display:none;margin-top:10px;padding:10px;background:var(--bg3);border-radius:8px;font-size:13px;color:var(--text2)">
+            <span style="display:inline-block;width:14px;height:14px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:8px"></span>
+            Analizando imagen con IA...
+          </div>
         </div>
       </div>
     </div>
@@ -1026,8 +1030,8 @@ function handleFile(inp) {
   var reader = new FileReader();
   reader.onload = function(e) {
     var b64 = e.target.result.split(',')[1];
-    res.innerHTML = '<img src="' + e.target.result + '" style="max-width:100%;border-radius:8px;margin-bottom:10px">'
-      + '<div id="ia-status" style="padding:10px;background:var(--bg3);border-radius:8px;font-size:13px;color:var(--text2)"><span class="spin" style="display:inline-block;width:14px;height:14px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;margin-right:8px"></span>Analizando imagen con IA...</div>';
+    res.innerHTML = '<img src="' + e.target.result + '" style="max-width:100%;border-radius:8px;margin-bottom:10px">';
+    var prog = document.getElementById('ia-progress'); if(prog) prog.style.display='block';
     var procs = DB.procedures.map(function(p){return p.name+'(precio:'+p.price+'€)';}).join(', ');
     var clinics = DB.clinics.map(function(c){return c.name+'='+c.id+(c.branches&&c.branches.length?' sucursales:['+c.branches.join(',')+']':'');}).join('; ');
     var prompt = 'Extrae datos de actividad medica de esta imagen.'
@@ -1053,13 +1057,17 @@ function handleFile(inp) {
       _fillActivityFromIA(parsed, res);
     })
     .catch(function(err){
-      res.innerHTML += '<div style="color:var(--danger);margin-top:8px">Error IA: '+err.message+'</div>';
+      var prog3 = document.getElementById('ia-progress'); if(prog3) prog3.style.display='none';
+    res.innerHTML += '<div style="color:var(--danger);margin-top:8px">Error IA: '+err.message+'</div>';
     });
   };
   reader.readAsDataURL(f);
 }
 
 function _fillActivityFromIA(data, res) {
+  // Switch to manual tab so user can see and save
+  var manualTab = document.querySelector('#page-activity .tab');
+  if(manualTab) { setActTab('manual', manualTab); }
   // Fill date
   if(data.date) { var di=document.getElementById('act-date'); if(di) di.value=data.date; }
   // Fill clinic
