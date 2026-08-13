@@ -194,7 +194,6 @@ textarea{resize:vertical;min-height:72px}
             <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Clínica</th><th>Sucursal</th><th>Importe</th></tr></thead><tbody id="d-recent"></tbody></table></div>
           </div>
         </div>
-        <div id="voice-result" style="font-size:12px;color:var(--text3);margin-top:6px;padding:0 4px;min-height:16px"></div>
       </div>
       <div id="dash-actividad" style="display:none">
         <div class="filter-row">
@@ -239,7 +238,6 @@ textarea{resize:vertical;min-height:72px}
         <div class="total-box"><span class="total-label">Total sesión</span><span class="total-value" id="act-total">0,00 €</span></div>
         <div class="actions-row">
           <button class="btn" onclick="clearActivity()"><i class="ti ti-x"></i>Limpiar</button>
-          <button id="voice-btn" class="btn" onclick="startVoiceInput()" title="Dictar actividad por voz"><i class="ti ti-microphone"></i>🎤 Voz</button>
           <button class="btn btn-primary" onclick="saveActivity()"><i class="ti ti-device-floppy"></i>Guardar actividad</button>
         </div>
       </div>
@@ -253,10 +251,6 @@ textarea{resize:vertical;min-height:72px}
             <input type="file" id="file-inp" accept="image/*,.pdf" style="display:none" onchange="handleFile(this)">
           </div>
           <div id="file-result" style="margin-top:14px"></div>
-          <div id="ia-progress" style="display:none;margin-top:10px;padding:10px;background:var(--bg3);border-radius:8px;font-size:13px;color:var(--text2)">
-            <span style="display:inline-block;width:14px;height:14px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:8px"></span>
-            Analizando imagen con IA...
-          </div>
         </div>
       </div>
     </div>
@@ -531,77 +525,6 @@ function renderDashboard() {
     return '<tr><td>' + fmtDate(s.date) + '</td><td>' + (s.clinic || '—') + '</td><td>' + (s.branch || '—') + '</td><td style="color:var(--accent)">' + fmtEur(s.total) + '</td></tr>';
   }).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--text3)">Sin actividad</td></tr>';
   renderDashAct();
-  // Check for pending invoices from previous month
-  _checkPendingInvoices();
-}
-
-function _checkPendingInvoices() {
-  var now = new Date();
-  var prevY = now.getMonth()===0 ? now.getFullYear()-1 : now.getFullYear();
-  var prevM = now.getMonth()===0 ? 12 : now.getMonth();
-  var prevMonth = prevY+'-'+pad(prevM);
-  var from = prevMonth+'-01';
-  var lastD = new Date(prevY, prevM, 0);
-  var to = prevY+'-'+pad(prevM)+'-'+pad(lastD.getDate());
-  // Sessions from previous month
-  var prevSessions = DB.sessions.filter(function(s){return s.date>=from && s.date<=to;});
-  if(!prevSessions.length) { _removePendingBanner(); return; }
-  // Clinics with activity last month
-  var clinicsWithActivity = Array.from(new Set(prevSessions.map(function(s){return s.clinic;})));
-  // Already invoiced last month
-  var invoicedClinics = new Set(DB.invoices.filter(function(i){return i.month===prevMonth;}).map(function(i){return i.clinic;}));
-  var pending = clinicsWithActivity.filter(function(c){return !invoicedClinics.has(c);});
-  if(!pending.length) { _removePendingBanner(); return; }
-  var banner = document.getElementById('pending-invoice-banner');
-  if(!banner) {
-    banner = document.createElement('div');
-    banner.id = 'pending-invoice-banner';
-    banner.style.cssText = 'background:var(--warning-bg,#2b1d00);border:1px solid var(--warning,#f0b429);border-radius:10px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap';
-    var dashContent = document.querySelector('#page-dashboard .dash-content, #page-dashboard .stats-grid, #page-dashboard');
-    if(dashContent) dashContent.insertBefore(banner, dashContent.firstChild);
-  }
-  banner.innerHTML = '<div style="font-size:13px;color:#f0b429">⚠️ <strong>'+pending.length+' clínica(s) sin facturar</strong> de '+prevMonth+': '+pending.join(', ')+'</div>'
-    +'<button id="btn-auto-invoice" style="padding:8px 14px;background:#f0b429;color:#000;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;white-space:nowrap">Generar facturas</button>';
-  var btn = document.getElementById('btn-auto-invoice');
-  if(btn) btn.addEventListener('click', function(){ _autoGenerateInvoices(pending, prevMonth); });
-}
-
-function _removePendingBanner() {
-  var b = document.getElementById('pending-invoice-banner');
-  if(b) b.remove();
-}
-
-function _autoGenerateInvoices(clinicNames, monthVal) {
-  var parts = monthVal.split('-');
-  var y = parseInt(parts[0]), m = parseInt(parts[1]);
-  var from = y+'-'+pad(m)+'-01';
-  var lastD = new Date(y, m, 0);
-  var to = y+'-'+pad(m)+'-'+pad(lastD.getDate());
-  var created = 0;
-  clinicNames.forEach(function(clinicName){
-    var clinic = getClinic(clinicName);
-    var branches = clinic && clinic.branches && clinic.branches.length ? clinic.branches : [null];
-    // For Clínica Londres → one invoice per branch
-    // For others → one invoice for all branches
-    var isLondon = clinicName.toLowerCase().includes('londres');
-    var groups = isLondon ? branches.map(function(b){return {branch:b||''};}) : [{branch:''}];
-    groups.forEach(function(g){
-      var sessions = DB.sessions.filter(function(s){return s.date>=from && s.date<=to && s.clinic===clinicName;});
-      if(g.branch) sessions = sessions.filter(function(s){return s.branch===g.branch;});
-      if(!sessions.length) return;
-      var aggr={};
-      sessions.forEach(function(s){s.lines.forEach(function(l){if(!aggr[l.proc])aggr[l.proc]={proc:l.proc,qty:0,price:l.price};aggr[l.proc].qty+=l.qty;});});
-      var lines=Object.values(aggr);
-      var others=[]; sessions.forEach(function(s){(s.others||[]).forEach(function(o){others.push(o);});});
-      var total=lines.reduce(function(a,l){return a+l.qty*l.price;},0)+others.reduce(function(a,o){return a+o.qty*o.price;},0);
-      var num=DB.company.prefix+String(DB.company.nextNum).padStart(3,'0');
-      DB.invoices.push({id:uid(),number:num,date:to,clinic:clinicName,branch:g.branch,freeName:'',freeNif:'',lines:lines,others:others,notes:'',status:'borrador',total:total,month:monthVal,createdAt:new Date().toISOString()});
-      DB.company.nextNum++;
-      created++;
-    });
-  });
-  if(!created){ toast('Sin actividad pendiente de facturar','error'); return; }
-  saveData().then(function(){ renderInvoices(); renderDashboard(); showPage('invoices'); toast(created+' factura(s) generadas como borrador'); });
 }
 function fillDashActSels() {
   var sel = document.getElementById('da-clinic'); if (!sel) return;
@@ -681,7 +604,7 @@ function smAddOtherRowWith(desc, qty, price) {
   div.innerHTML = '<input type="text" value="' + (desc || '') + '" placeholder="Descripción"><input type="number" value="' + (qty || 0) + '" min="0" style="text-align:center" onchange="recalcSmTotal()"><input type="number" value="' + (price || 0) + '" min="0" step="0.01" style="text-align:center" onchange="recalcSmTotal()"><button class="icon-btn" onclick="this.closest(\'div\').remove();recalcSmTotal()"><i class="ti ti-trash"></i></button>';
   c.appendChild(div);
 }
-function smProcChange(sel, idx) { var clinic = document.getElementById('act-clinic') ? document.getElementById('act-clinic').value : ''; var price = getProcPrice(sel.value, clinic); document.getElementById('smp-' + idx).value = price; recalcSmTotal(); }
+function smProcChange(sel, idx) { var price = getProcPrice(sel.value, ''); document.getElementById('smp-' + idx).value = price; recalcSmTotal(); }
 function recalcSmTotal() {
   var sum = 0;
   document.querySelectorAll('#sm-proc-rows .proc-row').forEach(function(row) { var inp = row.querySelectorAll('input[type=number]'); var q = parseFloat(inp[0] ? inp[0].value : 0) || 0; var p = parseFloat(inp[1] ? inp[1].value : 0) || 0; sum += q * p; var tv = row.querySelector('.proc-total-val'); if (tv) tv.textContent = fmtEur(q * p); });
@@ -764,77 +687,24 @@ function downloadFiltered() {
   list.forEach(function(inv) { printInvoice(inv.id); }); toast(list.length + ' factura(s) descargadas');
 }
 function newInvoice() {
-  // Show month picker dialog before generating
+  var num = DB.company.prefix + String(DB.company.nextNum).padStart(3, '0');
   var now = new Date();
-  var currentMonth = now.getFullYear() + '-' + pad(now.getMonth() + 1);
-  var prevMonth = now.getMonth() === 0
-    ? (now.getFullYear()-1) + '-12'
-    : now.getFullYear() + '-' + pad(now.getMonth());
   var clinicName = document.getElementById('f-clinic') ? document.getElementById('f-clinic').value : '';
   var branchName = document.getElementById('f-branch') ? document.getElementById('f-branch').value : '';
-
-  // Build clinic/branch options
-  var clinicOpts = '<option value="">— Todas las clínicas —</option>' + DB.clinics.map(function(c){return '<option value="'+c.name+'"'+(c.name===clinicName?' selected':'')+'>'+c.name+'</option>';}).join('');
-
-  var d = document.createElement('div');
-  d.id = 'inv-dialog-overlay';
-  d.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)';
-  d.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--border2);border-radius:14px;padding:24px;width:420px;max-width:95vw">'
-    + '<h3 style="margin:0 0 18px;font-size:16px">Nueva factura</h3>'
-    + '<div style="margin-bottom:14px"><label style="display:block;font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Mes a facturar</label>'
-    + '<input type="month" id="inv-month-pick" value="'+prevMonth+'" style="width:100%;padding:8px 10px;border:1px solid var(--border2);border-radius:8px;background:var(--bg3);color:var(--text1);font-size:14px"></div>'
-    + '<div style="margin-bottom:14px"><label style="display:block;font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Clínica (opcional)</label>'
-    + '<select id="inv-clinic-pick" style="width:100%;padding:8px 10px;border:1px solid var(--border2);border-radius:8px;background:var(--bg3);color:var(--text1);font-size:14px" onchange="invDialogClinicChange()">'+clinicOpts+'</select></div>'
-    + '<div style="margin-bottom:18px"><label style="display:block;font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Sucursal (opcional)</label>'
-    + '<select id="inv-branch-pick" style="width:100%;padding:8px 10px;border:1px solid var(--border2);border-radius:8px;background:var(--bg3);color:var(--text1);font-size:14px"><option value="">— Todas —</option></select></div>'
-    + '<div style="display:flex;gap:8px;justify-content:flex-end">'
-    + '<button id="inv-btn-cancel" style="padding:8px 16px;border:1px solid var(--border2);background:transparent;color:var(--text2);border-radius:8px;cursor:pointer">Cancelar</button>'
-    + '<button id="inv-btn-ok" style="padding:8px 16px;background:var(--accent);color:#000;border:none;border-radius:8px;font-weight:600;cursor:pointer">Generar factura</button>'
-    + '</div></div>';
-  document.body.appendChild(d);
-  var bc = document.getElementById('inv-btn-cancel');
-  if(bc) bc.addEventListener('click', function(){ var o=document.getElementById('inv-dialog-overlay');if(o)o.remove(); });
-  var bo = document.getElementById('inv-btn-ok');
-  if(bo) bo.addEventListener('click', _createInvoiceFromDialog);
-}
-
-function invDialogClinicChange() {
-  var clinicName = document.getElementById('inv-clinic-pick') ? document.getElementById('inv-clinic-pick').value : '';
-  var clinic = getClinic(clinicName);
-  var sel = document.getElementById('inv-branch-pick');
-  if (!sel) return;
-  sel.innerHTML = '<option value="">— Todas —</option>' + (clinic ? clinic.branches : []).map(function(b){return '<option value="'+b+'">'+b+'</option>';}).join('');
-}
-
-function _createInvoiceFromDialog() {
-  var monthVal = document.getElementById('inv-month-pick') ? document.getElementById('inv-month-pick').value : '';
-  var clinicName = document.getElementById('inv-clinic-pick') ? document.getElementById('inv-clinic-pick').value : '';
-  var branchName = document.getElementById('inv-branch-pick') ? document.getElementById('inv-branch-pick').value : '';
-  if (!monthVal) { alert('Selecciona un mes'); return; }
-  var overlay = document.getElementById('inv-dialog-overlay');
-  if (overlay) overlay.remove();
-  _generateInvoice(monthVal, clinicName, branchName);
-}
-
-function _generateInvoice(monthVal, clinicName, branchName) {
-  var parts = monthVal.split('-');
-  var y = parseInt(parts[0]), m = parseInt(parts[1]);
-  var from = y + '-' + pad(m) + '-01';
-  var lastD = new Date(y, m, 0);
-  var to = y + '-' + pad(m) + '-' + pad(lastD.getDate());
-  var sessions = DB.sessions.filter(function(s){ return s.date >= from && s.date <= to; });
-  if (clinicName) sessions = sessions.filter(function(s){ return s.clinic === clinicName; });
-  if (branchName) sessions = sessions.filter(function(s){ return s.branch === branchName; });
-  if (!sessions.length) { toast('Sin actividad registrada para este período', 'error'); return; }
+  var from = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-01';
+  var lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  var to = lastDay.getFullYear() + '-' + pad(lastDay.getMonth() + 1) + '-' + pad(lastDay.getDate());
+  var sessions = DB.sessions.filter(function(s) { return s.date >= from && s.date <= to; });
+  if (clinicName) sessions = sessions.filter(function(s) { return s.clinic === clinicName; });
+  if (branchName) sessions = sessions.filter(function(s) { return s.branch === branchName; });
   var aggr = {};
-  sessions.forEach(function(s){ s.lines.forEach(function(l){ if(!aggr[l.proc]) aggr[l.proc]={proc:l.proc,qty:0,price:l.price}; aggr[l.proc].qty+=l.qty; }); });
+  sessions.forEach(function(s) { s.lines.forEach(function(l) { if (!aggr[l.proc]) aggr[l.proc] = {proc:l.proc, qty:0, price:l.price}; aggr[l.proc].qty += l.qty; }); });
   var lines = Object.values(aggr);
-  var others = []; sessions.forEach(function(s){ (s.others||[]).forEach(function(o){ others.push(o); }); });
-  var total = lines.reduce(function(a,l){return a+l.qty*l.price;},0)+others.reduce(function(a,o){return a+o.qty*o.price;},0);
-  var num = DB.company.prefix + String(DB.company.nextNum).padStart(3,'0');
-  var inv = {id:uid(),number:num,date:to,clinic:clinicName,branch:branchName,freeName:'',freeNif:'',lines:lines,others:others,notes:'',status:'borrador',total:total,month:monthVal,createdAt:new Date().toISOString()};
+  var others = []; sessions.forEach(function(s) { (s.others || []).forEach(function(o) { others.push(o); }); });
+  var total = lines.reduce(function(a, l) { return a + l.qty * l.price; }, 0) + others.reduce(function(a, o) { return a + o.qty * o.price; }, 0);
+  var inv = {id:uid(), number:num, date:now.toISOString().split('T')[0], clinic:clinicName, branch:branchName, freeName:'', freeNif:'', lines:lines, others:others, notes:'', status:'borrador', total:total, createdAt:new Date().toISOString()};
   DB.invoices.push(inv); DB.company.nextNum++;
-  saveData().then(function(){ renderInvoices(); openInvoiceEditor(inv.id); toast('Factura creada — '+sessions.length+' sesiones del mes '+monthVal); });
+  saveData().then(function() { renderInvoices(); openInvoiceEditor(inv.id); toast('Factura creada con actividad del mes'); });
 }
 function deleteInvoice(id) {
   if (!confirm('¿Eliminar esta factura?')) return;
@@ -903,28 +773,17 @@ function printInvoice(id) {
   var invMeta = '<div class="lbl">Factura</div><div class="inv-num">' + inv.number + '</div><div style="color:#555;margin-top:6px;font-size:13px">Fecha: ' + fmtDate(inv.date) + '</div><div style="margin-top:10px"><span style="padding:4px 12px;border-radius:20px;font-size:12px;font-weight:500;background:' + (inv.status === 'emitida' ? '#e8f8f2' : '#fff9ee') + ';color:' + (inv.status === 'emitida' ? '#2ecc8a' : '#ef9f27') + ';border:1px solid ' + (inv.status === 'emitida' ? '#2ecc8a' : '#ef9f27') + '">' + inv.status + '</span></div>';
   var destBlock = '<div class="dest"><div class="lbl">Destinatario</div><div style="font-weight:700;font-size:15px;color:#1a1a1a;margin-bottom:4px">' + clientName + '</div>' + (clientNif ? '<div class="dr">NIF/DNI: ' + clientNif + '</div>' : '') + (inv.branch ? '<div class="dr">' + inv.branch + '</div>' : '') + (clientAddr ? '<div class="dr">' + clientAddr + '</div>' : '') + ((clientCp || clientCity) ? '<div class="dr">' + clientCp + ' ' + clientCity + '</div>' : '') + '</div>';
   var body = '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Factura ' + inv.number + '</title><style>' + css + '</style></head><body><div class="header"><div>' + emitter + '</div><div style="text-align:right">' + invMeta + '</div></div>' + destBlock + '<h3>Servicios prestados</h3><table><thead><tr><th>Procedimiento</th><th style="text-align:center">Cantidad</th><th style="text-align:right">Precio</th><th style="text-align:right">Total</th></tr></thead><tbody>' + linesHTML + othersHTML + '</tbody><tfoot><tr class="total-row"><td colspan="3">Total (exento de IVA — Art. 20.Uno.3 Ley 37/1992)</td><td style="text-align:right;font-size:16px;color:#c9a84c">' + fmtEur(inv.total) + '</td></tr></tfoot></table>' + (inv.notes ? '<h3>Comentarios</h3><p style="color:#555;margin-top:6px">' + inv.notes + '</p>' : '') + '<div class="footer">' + (comp.footer || '') + '</div></body></html>';
-  var filename = 'Factura-' + inv.number + '-' + (inv.freeName || inv.clinic || 'cliente').replace(/[^a-zA-Z0-9]/g, '_');
-  toast('Generando PDF...');
-  fetch('/api/pdf', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({html: body, filename: filename})
-  }).then(function(r) {
-    if (!r.ok) throw new Error('Error generando PDF');
-    return r.blob();
-  }).then(function(blob) {
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = filename + '.pdf';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
-    toast('PDF descargado');
-  }).catch(function(e) {
-    toast('Error: ' + e.message, 'error');
-  });
+  var w = window.open('', '_blank');
+  if (w) {
+    w.document.write(body);
+    w.document.close();
+    setTimeout(function() {
+      w.focus();
+      w.print();
+    }, 800);
+  } else {
+    toast('Permite ventanas emergentes para generar el PDF', 'error');
+  }
 }
 function addProcRow(cid) {
   var c = document.getElementById(cid);
@@ -952,65 +811,6 @@ function handleActivityFiles(files) {
   pendingFiles = []; var prev = document.getElementById('act-file-preview'); prev.innerHTML = '';
   Array.from(files).forEach(function(f) { var r = new FileReader(); r.onload = function(e) { pendingFiles.push({name:f.name, type:f.type, dataUrl:e.target.result}); if (f.type.startsWith('image/')) { var img = document.createElement('img'); img.src = e.target.result; img.style.cssText = 'width:80px;height:60px;object-fit:cover;border-radius:6px;border:1px solid var(--border2)'; prev.appendChild(img); } else { var d = document.createElement('div'); d.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;font-size:12px;color:var(--text2);margin-bottom:4px'; d.innerHTML = '<i class="ti ti-file-type-pdf" style="color:var(--danger)"></i>' + f.name; prev.appendChild(d); } }; r.readAsDataURL(f); });
 }
-function startVoiceInput() {
-  if(!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)){
-    toast('Tu navegador no soporta reconocimiento de voz. Usa Chrome.','error'); return;
-  }
-  var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-  var rec = new SpeechRec();
-  rec.lang = 'es-ES'; rec.continuous = false; rec.interimResults = false;
-  var btn = document.getElementById('voice-btn');
-  if(btn){ btn.textContent='🔴 Escuchando...'; btn.style.background='var(--danger)'; btn.style.color='#fff'; }
-  rec.onresult = function(e){
-    var transcript = e.results[0][0].transcript;
-    if(btn){ btn.textContent='🎤 Voz'; btn.style.background=''; btn.style.color=''; }
-    document.getElementById('voice-result').textContent = '"'+transcript+'"';
-    _processVoiceInput(transcript);
-  };
-  rec.onerror = function(e){
-    if(btn){ btn.textContent='🎤 Voz'; btn.style.background=''; btn.style.color=''; }
-    toast('Error de voz: '+e.error,'error');
-  };
-  rec.onend = function(){
-    if(btn && btn.textContent==='🔴 Escuchando...'){ btn.textContent='🎤 Voz'; btn.style.background=''; btn.style.color=''; }
-  };
-  rec.start();
-}
-
-function _processVoiceInput(text) {
-  // Send to AI to parse the voice input
-  var procs = DB.procedures.map(function(p){return p.name;}).join(', ');
-  var clinics = DB.clinics.map(function(c){return c.name+(c.branches&&c.branches.length?' (sucursales: '+c.branches.join(', ')+')':'');}).join('; ');
-  var hoy = new Date().toISOString().split('T')[0];
-  var prompt = 'Extrae datos de actividad medica del texto: "'+text+'".'
-    + ' CLINICAS: '+clinics+'.'
-    + ' ACTOS: '+procs+'.'
-    + ' Responde SOLO JSON: {"date":"YYYY-MM-DD","clinic":"nombre","branch":"sucursal o vacio","lines":[{"proc":"nombre","qty":1}],"notes":""}'
-    + ' Fecha de hoy si no se menciona: '+hoy+'. qty debe ser entero.';
-  var status = document.getElementById('voice-result');
-  if(status) status.textContent += ' → Procesando...';
-  fetch('/api/ia/import', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({messages:[{role:'user',content:prompt}]})
-  })
-  .then(function(r){return r.json();})
-  .then(function(data){
-    var txt = data.content && data.content[0] ? data.content[0].text : '';
-    var m = txt.match(/\{[\s\S]*\}/);
-    if(!m) throw new Error('Sin JSON');
-    var parsed = JSON.parse(m[0]);
-    // Fill prices from catalog
-    if(parsed.lines) parsed.lines = parsed.lines.map(function(l){
-      var clinic = document.getElementById('act-clinic') ? document.getElementById('act-clinic').value : (parsed.clinic||'');
-      return {proc:l.proc, qty:l.qty, price:getProcPrice(l.proc, clinic)};
-    });
-    _fillActivityFromIA(parsed, document.createElement('div'));
-    if(status) status.textContent = '✓ Completado: '+text;
-    toast('Actividad dictada cargada — revisa y guarda');
-  })
-  .catch(function(e){ if(status) status.textContent += ' Error: '+e.message; toast('Error procesando voz','error'); });
-}
-
 function clearActivity() { document.getElementById('act-proc-rows').innerHTML = ''; document.getElementById('act-other-rows').innerHTML = ''; document.getElementById('act-notes').value = ''; document.getElementById('act-total').textContent = '0,00 €'; document.getElementById('act-file-preview').innerHTML = ''; document.getElementById('act-files').value = ''; pendingFiles = []; }
 function saveActivity() {
   var date = document.getElementById('act-date').value; var clinic = document.getElementById('act-clinic').value; var branch = document.getElementById('act-branch').value;
@@ -1022,146 +822,7 @@ function saveActivity() {
   saveData().then(function() { clearActivity(); toast('Actividad guardada'); renderDashboard(); });
 }
 function setActTab(t, el) { document.querySelectorAll('#page-activity .tab').forEach(function(x) { x.classList.remove('active'); }); el.classList.add('active'); document.getElementById('act-manual').style.display = t === 'manual' ? 'block' : 'none'; document.getElementById('act-photo').style.display = t === 'photo' ? 'block' : 'none'; }
-function handleFile(inp) {
-  if (!inp.files.length) return;
-  var res = document.getElementById('file-result');
-  var f = inp.files[0];
-  if (!f.type.startsWith('image/')) { res.innerHTML = '<div style="color:var(--accent)">Archivo cargado. Solo se soportan imágenes para IA.</div>'; return; }
-  var reader = new FileReader();
-  reader.onload = function(e) {
-    var b64 = e.target.result.split(',')[1];
-    res.innerHTML = '<img src="' + e.target.result + '" style="max-width:100%;border-radius:8px;margin-bottom:10px">';
-    var prog = document.getElementById('ia-progress'); if(prog) prog.style.display='block';
-    var procs = DB.procedures.map(function(p){return p.name+'(precio:'+p.price+'€)';}).join(', ');
-    var clinics = DB.clinics.map(function(c){return c.name+'='+c.id+(c.branches&&c.branches.length?' sucursales:['+c.branches.join(',')+']':'');}).join('; ');
-    var prompt = 'Extrae datos de actividad medica de esta imagen.'
-      + ' CLINICAS: '+clinics+'.'
-      + ' ACTOS: '+procs+'.'
-      + ' Responde SOLO JSON: {"date":"YYYY-MM-DD","clinic":"nombre exacto","branch":"sucursal o vacio","lines":[{"proc":"nombre exacto","qty":1,"price":0}],"notes":"observaciones"}'
-      + ' Deja vacio lo que no detectes. Fecha formato YYYY-MM-DD.';
-    fetch('/api/ia/import', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({messages:[{role:'user',content:[
-        {type:'image',source:{type:'base64',media_type:f.type,data:b64}},
-        {type:'text',text:prompt}
-      ]}]})
-    })
-    .then(function(r){return r.json();})
-    .then(function(data){
-      if(data.error) throw new Error(data.error.message||JSON.stringify(data.error));
-      var text = data.content && data.content[0] ? data.content[0].text : '';
-      var m = text.match(/\{[\s\S]*\}/);
-      if(!m) throw new Error('Sin JSON en respuesta');
-      var parsed = JSON.parse(m[0]);
-      _fillActivityFromIA(parsed, res);
-    })
-    .catch(function(err){
-      var prog3 = document.getElementById('ia-progress'); if(prog3) prog3.style.display='none';
-    res.innerHTML += '<div style="color:var(--danger);margin-top:8px">Error IA: '+err.message+'</div>';
-    });
-  };
-  reader.readAsDataURL(f);
-}
-
-function _fillActivityFromIA(data, res) {
-  var prog = document.getElementById('ia-progress'); if(prog) prog.style.display='none';
-  
-  // Build editable preview card in the photo tab
-  var clinicOpts = '<option value="">— No detectado —</option>' + DB.clinics.map(function(c){
-    return '<option value="'+c.name+'"'+(c.name===data.clinic?' selected':'')+'>'+c.name+'</option>';
-  }).join('');
-  
-  var linesHTML = '';
-  if(data.lines && data.lines.length) {
-    data.lines.forEach(function(l, i){
-      var price = l.price && l.price>0 ? l.price : getProcPrice(l.proc, data.clinic||'');
-      linesHTML += '<div style="display:grid;grid-template-columns:1fr 70px 80px 80px;gap:6px;margin-bottom:6px;align-items:center">'
-        + '<input type="text" value="'+l.proc+'" id="ia-proc-'+i+'" placeholder="Acto" style="padding:6px 8px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px">'
-        + '<input type="number" value="'+l.qty+'" id="ia-qty-'+i+'" min="0" style="padding:6px 8px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px;text-align:center" placeholder="Cant.">'
-        + '<input type="number" value="'+price+'" id="ia-price-'+i+'" min="0" step="0.01" style="padding:6px 8px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px;text-align:right" placeholder="Precio">'
-        + '<button class="ia-del-btn" data-row="'+i+'" style="padding:4px 8px;border:1px solid var(--border2);background:transparent;color:var(--danger);border-radius:6px;cursor:pointer;font-size:14px">✕</button>'
-        + '</div>';
-      linesHTML = linesHTML.replace('<div style="display:grid', '<div id="ia-row-'+i+'" style="display:grid');
-    });
-  }
-  
-  var previewHTML = '<div style="margin-top:12px;background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:16px">'
-    + '<div style="font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px">✓ Datos detectados — revisa y confirma</div>'
-    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">'
-    + '<div><label style="display:block;font-size:11px;color:var(--text3);margin-bottom:4px">FECHA</label>'
-    + '<input type="date" id="ia-date" value="'+(data.date||'')+'" style="width:100%;padding:7px 10px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px"></div>'
-    + '<div><label style="display:block;font-size:11px;color:var(--text3);margin-bottom:4px">CLÍNICA</label>'
-    + '<select id="ia-clinic" onchange="iaClinicChange()" style="width:100%;padding:7px 10px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px">'+clinicOpts+'</select></div>'
-    + '</div>'
-    + '<div style="margin-bottom:12px"><label style="display:block;font-size:11px;color:var(--text3);margin-bottom:4px">SUCURSAL</label>'
-    + '<select id="ia-branch" style="width:100%;padding:7px 10px;border:1px solid var(--border2);border-radius:6px;background:var(--bg3);color:var(--text1);font-size:13px"><option value="">— Sin sucursal —</option>'
-    + (data.clinic ? (function(){ var cl=DB.clinics.find(function(c){return c.name===data.clinic;}); return cl ? cl.branches.map(function(b){return '<option value="'+b+'"'+(b===data.branch?' selected':'')+'>'+b+'</option>';}).join('') : ''; })() : '')
-    + '</select></div>'
-    + '<div style="font-size:11px;color:var(--text3);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">ACTOS DETECTADOS</div>'
-    + '<div style="display:grid;grid-template-columns:1fr 70px 80px 80px;gap:6px;margin-bottom:4px">'
-    + '<span style="font-size:10px;color:var(--text3)">Acto</span><span style="font-size:10px;color:var(--text3);text-align:center">Cant.</span><span style="font-size:10px;color:var(--text3);text-align:right">Precio</span><span></span>'
-    + '</div>'
-    + '<div id="ia-lines">'+linesHTML+'</div>'
-    + '<div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">'
-    + '<button onclick="_iaCancel()" style="padding:7px 14px;border:1px solid var(--border2);background:transparent;color:var(--text2);border-radius:7px;cursor:pointer;font-size:13px">Cancelar</button>'
-    + '<button onclick="_iaConfirm()" style="padding:7px 14px;background:var(--accent);color:#000;border:none;border-radius:7px;font-weight:600;font-size:13px;cursor:pointer">Guardar actividad</button>'
-    + '</div></div>';
-
-  var oldImg = res.querySelector('img');
-  res.innerHTML = (oldImg ? '<img src="'+oldImg.src+'" style="max-width:100%;border-radius:8px;margin-bottom:10px">' : '') + previewHTML;
-  // Add delete handlers
-  res.querySelectorAll('.ia-del-btn').forEach(function(btn){
-    btn.addEventListener('click', function(){
-      var row = document.getElementById('ia-row-'+this.dataset.row);
-      if(row) row.remove();
-    });
-  });
-}
-
-function iaClinicChange() {
-  var clinicName = document.getElementById('ia-clinic') ? document.getElementById('ia-clinic').value : '';
-  var cl = DB.clinics.find(function(c){ return c.name === clinicName; });
-  var sel = document.getElementById('ia-branch');
-  if(!sel) return;
-  sel.innerHTML = '<option value="">— Sin sucursal —</option>' + (cl ? cl.branches.map(function(b){ return '<option value="'+b+'">'+b+'</option>'; }).join('') : '');
-}
-
-function _iaCancel() {
-  var res = document.getElementById('file-result');
-  if(res) res.innerHTML = '';
-  var inp = document.getElementById('file-inp');
-  if(inp) inp.value = '';
-}
-
-function _iaConfirm() {
-  var date = document.getElementById('ia-date') ? document.getElementById('ia-date').value : '';
-  var clinic = document.getElementById('ia-clinic') ? document.getElementById('ia-clinic').value : '';
-  var branch = document.getElementById('ia-branch') ? document.getElementById('ia-branch').value : '';
-  if(!date) { toast('Indica la fecha', 'error'); return; }
-
-  // Gather lines from preview
-  var lines = [];
-  var i = 0;
-  while(true) {
-    var row = document.getElementById('ia-row-'+i);
-    if(!row) break;
-    var proc = document.getElementById('ia-proc-'+i) ? document.getElementById('ia-proc-'+i).value.trim() : '';
-    var qty = parseFloat(document.getElementById('ia-qty-'+i) ? document.getElementById('ia-qty-'+i).value : 0) || 0;
-    var price = parseFloat(document.getElementById('ia-price-'+i) ? document.getElementById('ia-price-'+i).value : 0) || getProcPrice(proc, clinic);
-    if(proc && qty > 0) lines.push({proc:proc, qty:qty, price:price});
-    i++;
-  }
-  if(!lines.length) { toast('No hay actos con cantidad', 'error'); return; }
-  
-  var total = lines.reduce(function(a,l){return a+l.qty*l.price;},0);
-  DB.sessions.push({id:uid(), date:date, clinic:clinic, branch:branch, lines:lines, others:[], notes:'', files:[], total:total, createdAt:new Date().toISOString()});
-  saveData().then(function(){
-    _iaCancel();
-    toast('Actividad guardada desde foto ✓');
-    renderDashboard();
-  });
-}
+function handleFile(inp) { if (!inp.files.length) return; var res = document.getElementById('file-result'); var f = inp.files[0]; if (f.type.startsWith('image/')) { var r = new FileReader(); r.onload = function(e) { res.innerHTML = '<img src="' + e.target.result + '" style="max-width:100%;border-radius:8px;margin-bottom:10px"><div style="color:var(--green)">Imagen cargada</div>'; }; r.readAsDataURL(f); } else { res.innerHTML = '<div style="color:var(--green)">PDF cargado</div>'; } }
 function renderClinicCards() {
   var c = document.getElementById('clinic-cards'); if (!c) return;
   if (!DB.clinics.length) { c.innerHTML = '<div class="empty-state">Sin clínicas. Añade la primera.</div>'; return; }
