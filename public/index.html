@@ -292,6 +292,7 @@ textarea{resize:vertical;min-height:72px}
         <select id="f-status" onchange="renderInvoices()"><option value="">Todos</option><option value="borrador">Borrador</option><option value="emitida">Emitida</option></select>
         <button class="btn" onclick="downloadSelected()"><i class="ti ti-download"></i>Selección</button>
         <button class="btn" onclick="downloadFiltered()"><i class="ti ti-download"></i>Descargar filtradas</button>
+        <button class="btn btn-green" onclick="generateMonthlyInvoices()" style="font-weight:600"><i class="ti ti-calendar-bolt"></i>Generar facturas del mes</button>
         <button class="btn btn-primary" onclick="newInvoice()"><i class="ti ti-plus"></i>Nueva factura</button>
       </div>
       <div class="table-wrap">
@@ -707,9 +708,11 @@ function newInvoice() {
   saveData().then(function() { renderInvoices(); openInvoiceEditor(inv.id); toast('Factura creada con actividad del mes'); });
 }
 function deleteInvoice(id) {
-  if (!confirm('¿Eliminar esta factura?')) return;
+  if (!confirm('¿Eliminar esta factura? La actividad registrada manualmente NO se eliminará.')) return;
   DB.invoices = DB.invoices.filter(function(i) { return i.id !== id; });
-  saveData().then(function() { renderInvoices(); toast('Factura eliminada'); });
+  // Only remove the synthetic session created from this invoice, not manual sessions
+  DB.sessions = DB.sessions.filter(function(s) { return s.fromInvoiceId !== id; });
+  saveData().then(function() { renderInvoices(); renderDashboard(); toast('Factura eliminada'); });
 }
 function openInvoiceEditor(id) {
   var inv = DB.invoices.find(function(i) { return i.id === id; }); if (!inv) return;
@@ -726,7 +729,7 @@ function ieClinicChange(id) { fillBranchSel('ie-branch', document.getElementById
 function addInvLine(id) {
   var c = document.getElementById('ie-lines'); var div = document.createElement('div'); div.className = 'proc-row';
   var fp = DB.procedures[0];
-  div.innerHTML = '<select>' + DB.procedures.map(function(p) { return '<option value="' + p.name + '">' + p.name + '</option>'; }).join('') + '</select><input type="number" value="1" min="0" style="text-align:center" onchange="recalcInvDOM(\'' + id + '\')"><input type="number" value="' + (fp ? fp.price : 0) + '" min="0" step="0.01" style="text-align:center" onchange="recalcInvDOM(\'' + id + '\')"><div class="proc-total-val">' + (fp ? fmtEur(fp.price) : '0€') + '</div><button class="icon-btn" onclick="this.closest(\'.proc-row\').remove();recalcInvDOM(\'' + id + '\')"><i class="ti ti-trash"></i></button>';
+  div.innerHTML = '<select onchange="var p=DB.procedures.find(function(x){return x.name===this.value;},this);if(p){this.parentElement.querySelectorAll(\'input[type=number]\')[1].value=p.price;recalcInvDOM(\'' + id + '\');}">' + DB.procedures.map(function(p) { return '<option value="' + p.name + '">' + p.name + '</option>'; }).join('') + '</select><input type="number" value="1" min="0" style="text-align:center" onchange="recalcInvDOM(\'' + id + '\')"><input type="number" value="' + (fp ? fp.price : 0) + '" min="0" step="0.01" style="text-align:center" onchange="recalcInvDOM(\'' + id + '\')"><div class="proc-total-val">' + (fp ? fmtEur(fp.price) : '0€') + '</div><button class="icon-btn" onclick="this.closest(\'.proc-row\').remove();recalcInvDOM(\'' + id + '\')"><i class="ti ti-trash"></i></button>';
   c.appendChild(div); recalcInvDOM(id);
 }
 function addInvOther(id) {
@@ -755,7 +758,29 @@ function saveInvoice(id, andPrint) {
   var others = []; document.querySelectorAll('#ie-others > div').forEach(function(row) { var txt = row.querySelector('input[type=text]'); var inp = row.querySelectorAll('input[type=number]'); if (txt && txt.value) others.push({desc:txt.value, qty:parseFloat(inp[0] ? inp[0].value : 0) || 0, price:parseFloat(inp[1] ? inp[1].value : 0) || 0}); });
   inv.lines = lines; inv.others = others;
   inv.total = lines.reduce(function(a, l) { return a + l.qty * l.price; }, 0) + others.reduce(function(a, o) { return a + o.qty * o.price; }, 0);
-  saveData().then(function() { renderInvoices(); toast('Factura guardada'); if (andPrint) printInvoice(id); });
+  // Sync invoice lines to activity (point 5 & 6)
+  syncInvoiceToActivity(inv);
+  saveData().then(function() { renderInvoices(); renderDashboard(); renderActList(); toast('Factura guardada'); if (andPrint) printInvoice(id); });
+}
+
+function syncInvoiceToActivity(inv) {
+  // Remove any existing session linked to this invoice
+  DB.sessions = DB.sessions.filter(function(s) { return s.fromInvoiceId !== inv.id; });
+  if (!inv.lines.length && !(inv.others && inv.others.length)) return;
+  // Create a synthetic session from this invoice
+  var session = {
+    id: uid(),
+    date: inv.date,
+    clinic: inv.clinic || inv.freeName || '',
+    branch: inv.branch || '',
+    lines: inv.lines.map(function(l) { return {proc:l.proc, qty:l.qty, price:l.price}; }),
+    others: (inv.others||[]).map(function(o) { return {desc:o.desc, qty:o.qty, price:o.price}; }),
+    notes: 'Registrado desde factura ' + inv.number,
+    total: inv.total,
+    fromInvoiceId: inv.id,
+    createdAt: new Date().toISOString()
+  };
+  DB.sessions.push(session);
 }
 function printInvoice(id) {
   var inv = DB.invoices.find(function(i) { return i.id === id; }); if (!inv) return;
@@ -773,17 +798,17 @@ function printInvoice(id) {
   var invMeta = '<div class="lbl">Factura</div><div class="inv-num">' + inv.number + '</div><div style="color:#555;margin-top:6px;font-size:13px">Fecha: ' + fmtDate(inv.date) + '</div><div style="margin-top:10px"><span style="padding:4px 12px;border-radius:20px;font-size:12px;font-weight:500;background:' + (inv.status === 'emitida' ? '#e8f8f2' : '#fff9ee') + ';color:' + (inv.status === 'emitida' ? '#2ecc8a' : '#ef9f27') + ';border:1px solid ' + (inv.status === 'emitida' ? '#2ecc8a' : '#ef9f27') + '">' + inv.status + '</span></div>';
   var destBlock = '<div class="dest"><div class="lbl">Destinatario</div><div style="font-weight:700;font-size:15px;color:#1a1a1a;margin-bottom:4px">' + clientName + '</div>' + (clientNif ? '<div class="dr">NIF/DNI: ' + clientNif + '</div>' : '') + (inv.branch ? '<div class="dr">' + inv.branch + '</div>' : '') + (clientAddr ? '<div class="dr">' + clientAddr + '</div>' : '') + ((clientCp || clientCity) ? '<div class="dr">' + clientCp + ' ' + clientCity + '</div>' : '') + '</div>';
   var body = '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Factura ' + inv.number + '</title><style>' + css + '</style></head><body><div class="header"><div>' + emitter + '</div><div style="text-align:right">' + invMeta + '</div></div>' + destBlock + '<h3>Servicios prestados</h3><table><thead><tr><th>Procedimiento</th><th style="text-align:center">Cantidad</th><th style="text-align:right">Precio</th><th style="text-align:right">Total</th></tr></thead><tbody>' + linesHTML + othersHTML + '</tbody><tfoot><tr class="total-row"><td colspan="3">Total (exento de IVA — Art. 20.Uno.3 Ley 37/1992)</td><td style="text-align:right;font-size:16px;color:#c9a84c">' + fmtEur(inv.total) + '</td></tr></tfoot></table>' + (inv.notes ? '<h3>Comentarios</h3><p style="color:#555;margin-top:6px">' + inv.notes + '</p>' : '') + '<div class="footer">' + (comp.footer || '') + '</div></body></html>';
-  var w = window.open('', '_blank');
-  if (w) {
-    w.document.write(body);
-    w.document.close();
-    setTimeout(function() {
-      w.focus();
-      w.print();
-    }, 800);
-  } else {
-    toast('Permite ventanas emergentes para generar el PDF', 'error');
-  }
+  var blob = new Blob([body], {type:'text/html;charset=utf-8'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function() { URL.revokeObjectURL(url); }, 2000);
+  toast('Factura abierta — usa Cmd+P para guardar como PDF');
 }
 function addProcRow(cid) {
   var c = document.getElementById(cid);
@@ -868,6 +893,178 @@ function renderProcCatalog() {
 }
 function deleteProc(i) { if (!confirm('¿Eliminar?')) return; DB.procedures.splice(i, 1); saveData().then(function() { renderProcCatalog(); }); }
 function addProcedureCatalog() { var name = prompt('Nombre del procedimiento:'); if (!name || !name.trim()) return; var price = parseFloat(prompt('Precio general (€):')); if (isNaN(price)) return; DB.procedures.push({id:uid(), name:name.trim(), price:price}); saveData().then(function() { renderProcCatalog(); toast('Procedimiento añadido'); }); }
+
+// ─── INVOICE NUMBER GENERATORS ────────────────────────────────────────────────
+function getInvNum(prefix) {
+  var now = new Date();
+  var yy = String(now.getFullYear()).slice(-2);
+  var mm = now.getMonth() + 1;
+  return prefix + yy + '-' + mm;
+}
+
+// ─── BUILD INVOICE FROM SESSIONS ──────────────────────────────────────────────
+function buildInvoiceFromSessions(sessions, invNumber, clinicName, branchName, freeName, freeNif) {
+  var aggr = {};
+  sessions.forEach(function(s) {
+    s.lines.forEach(function(l) {
+      if (!aggr[l.proc]) aggr[l.proc] = {proc:l.proc, qty:0, price:l.price};
+      aggr[l.proc].qty += (parseFloat(l.qty) || 0);
+    });
+  });
+  var lines = Object.values(aggr).filter(function(l) { return l.qty > 0; });
+  var others = [];
+  sessions.forEach(function(s) {
+    (s.others || []).forEach(function(o) { others.push(o); });
+  });
+  var total = lines.reduce(function(a,l) { return a + l.qty * l.price; }, 0) +
+              others.reduce(function(a,o) { return a + (o.qty||1) * (o.price||0); }, 0);
+  return {
+    id: uid(),
+    number: invNumber,
+    date: new Date().toISOString().split('T')[0],
+    clinic: clinicName || '',
+    branch: branchName || '',
+    freeName: freeName || '',
+    freeNif: freeNif || '',
+    lines: lines,
+    others: others,
+    notes: '',
+    status: 'borrador',
+    total: total,
+    createdAt: new Date().toISOString(),
+    fromSessions: true
+  };
+}
+
+function getMonthSessions(clinicName, branchName, excludeConcept) {
+  var now = new Date();
+  var from = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-01';
+  var lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  var to = lastDay.getFullYear() + '-' + pad(lastDay.getMonth() + 1) + '-' + pad(lastDay.getDate());
+  var sessions = DB.sessions.filter(function(s) {
+    return s.date >= from && s.date <= to &&
+           (!clinicName || s.clinic === clinicName) &&
+           (!branchName || s.branch === branchName);
+  });
+  if (excludeConcept) {
+    sessions = sessions.map(function(s) {
+      return Object.assign({}, s, {
+        lines: s.lines.filter(function(l) { return l.proc !== excludeConcept; }),
+        others: (s.others||[]).filter(function(o) { return o.desc !== excludeConcept; })
+      });
+    });
+  }
+  return sessions;
+}
+
+function getCLDSessions() {
+  var now = new Date();
+  var from = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-01';
+  var lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  var to = lastDay.getFullYear() + '-' + pad(lastDay.getMonth() + 1) + '-' + pad(lastDay.getDate());
+  return DB.sessions.filter(function(s) {
+    return s.date >= from && s.date <= to;
+  }).map(function(s) {
+    var honorLines = s.lines.filter(function(l) { return l.proc === 'HONORARIOS PROFESIONALES FIJO'; });
+    var honorOthers = (s.others||[]).filter(function(o) { return o.desc === 'HONORARIOS PROFESIONALES FIJO'; });
+    return Object.assign({}, s, { lines: honorLines, others: honorOthers });
+  }).filter(function(s) { return s.lines.length > 0 || s.others.length > 0; });
+}
+
+// ─── GENERATE ALL MONTHLY INVOICES ────────────────────────────────────────────
+function generateMonthlyInvoices() {
+  var now = new Date();
+  var month = now.toLocaleDateString('es-ES', {month:'long', year:'numeric'});
+  if (!confirm('¿Generar todas las facturas del mes de ' + month + '?')) return;
+
+  var created = [];
+  var invoiceConfigs = [];
+
+  // Endos Medicina
+  var emClinic = DB.clinics.find(function(c) { return c.name.toLowerCase().includes('endos') || c.name.toLowerCase().includes('medicina'); });
+  if (emClinic) {
+    var emSessions = getMonthSessions(emClinic.name, '', null);
+    if (emSessions.length > 0) {
+      invoiceConfigs.push({sessions: emSessions, number: getInvNum('EM-'), clinicName: emClinic.name, branchName: '', freeName: '', freeNif: ''});
+    }
+  }
+
+  // Endumsalut
+  var esClinic = DB.clinics.find(function(c) { return c.name.toLowerCase().includes('endumsalut') || c.name.toLowerCase().includes('endums'); });
+  if (esClinic) {
+    var esSessions = getMonthSessions(esClinic.name, '', null);
+    if (esSessions.length > 0) {
+      invoiceConfigs.push({sessions: esSessions, number: getInvNum('ES-'), clinicName: esClinic.name, branchName: '', freeName: '', freeNif: ''});
+    }
+  }
+
+  // Clínica Londres — por sucursal
+  var clClinic = DB.clinics.find(function(c) { return c.name.toLowerCase().includes('londres') || c.name.toLowerCase().includes('london'); });
+  if (clClinic) {
+    // CLE — Entenza actividad (sin honorarios fijos)
+    var entenzaBranch = clClinic.branches.find(function(b) { return b.toLowerCase().includes('entenza'); });
+    if (entenzaBranch) {
+      var cleSessions = getMonthSessions(clClinic.name, entenzaBranch, 'HONORARIOS PROFESIONALES FIJO');
+      var hasActivity = cleSessions.some(function(s) { return s.lines.length > 0 || s.others.length > 0; });
+      if (hasActivity) {
+        invoiceConfigs.push({sessions: cleSessions, number: getInvNum('CLE'), clinicName: clClinic.name, branchName: entenzaBranch, freeName: '', freeNif: ''});
+      }
+      // CLD — Honorarios fijos Entenza
+      var cldSessions = getCLDSessions();
+      var hasCLD = cldSessions.some(function(s) { return s.lines.length > 0 || s.others.length > 0; });
+      if (hasCLD) {
+        invoiceConfigs.push({sessions: cldSessions, number: getInvNum('CLD'), clinicName: clClinic.name, branchName: entenzaBranch, freeName: 'Clínica Londres - Honorarios', freeNif: ''});
+      }
+    }
+    // Resto de sucursales (CLLG, etc.)
+    clClinic.branches.forEach(function(branch) {
+      if (entenzaBranch && branch === entenzaBranch) return; // ya procesada
+      var prefix = 'CL' + branch.replace(/[^a-zA-Z]/g, '').toUpperCase().slice(0, 2);
+      var branchSessions = getMonthSessions(clClinic.name, branch, null);
+      if (branchSessions.length > 0) {
+        invoiceConfigs.push({sessions: branchSessions, number: getInvNum(prefix), clinicName: clClinic.name, branchName: branch, freeName: '', freeNif: ''});
+      }
+    });
+  }
+
+  // Resto de clínicas no identificadas arriba
+  DB.clinics.forEach(function(clinic) {
+    var isEM = emClinic && clinic.id === emClinic.id;
+    var isES = esClinic && clinic.id === esClinic.id;
+    var isCL = clClinic && clinic.id === clClinic.id;
+    if (isEM || isES || isCL) return;
+    var sessions = getMonthSessions(clinic.name, '', null);
+    if (sessions.length > 0) {
+      invoiceConfigs.push({sessions: sessions, number: getInvNum('FAC-'), clinicName: clinic.name, branchName: '', freeName: '', freeNif: ''});
+    }
+  });
+
+  if (invoiceConfigs.length === 0) {
+    toast('No hay actividad registrada este mes para facturar', 'error');
+    return;
+  }
+
+  // Check for duplicates this month
+  var now2 = new Date();
+  var monthFrom = now2.getFullYear() + '-' + pad(now2.getMonth() + 1) + '-01';
+  var existing = DB.invoices.filter(function(i) { return i.date >= monthFrom; });
+  if (existing.length > 0) {
+    if (!confirm('Ya existen ' + existing.length + ' factura(s) este mes. ¿Continuar igualmente?')) return;
+  }
+
+  invoiceConfigs.forEach(function(cfg) {
+    var inv = buildInvoiceFromSessions(cfg.sessions, cfg.number, cfg.clinicName, cfg.branchName, cfg.freeName, cfg.freeNif);
+    DB.invoices.push(inv);
+    created.push(inv.number);
+  });
+
+  saveData().then(function() {
+    renderInvoices();
+    renderDashboard();
+    toast('Creadas ' + created.length + ' facturas: ' + created.join(', '));
+  });
+}
+
 function loadCompanyForm() { var co = DB.company; ['name','nif','addr','cp','city','email','phone','prefix','footer'].forEach(function(k) { var el = document.getElementById('co-' + k); if (el) el.value = co[k] || ''; }); document.getElementById('co-next-num').value = co.nextNum || 1; }
 function saveCompany() { DB.company = {name:document.getElementById('co-name').value, nif:document.getElementById('co-nif').value, addr:document.getElementById('co-addr').value, cp:document.getElementById('co-cp').value, city:document.getElementById('co-city').value, email:document.getElementById('co-email').value, phone:document.getElementById('co-phone').value, prefix:document.getElementById('co-prefix').value, nextNum:parseInt(document.getElementById('co-next-num').value) || 1, footer:document.getElementById('co-footer').value}; saveData().then(function() { toast('Datos guardados'); }); }
 loadData();
