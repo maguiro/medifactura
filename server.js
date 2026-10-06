@@ -2,7 +2,6 @@ const express = require('express');
 const { Pool } = require('pg');
 const path = require('path');
 const https = require('https');
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -11,7 +10,7 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Init DB
@@ -82,17 +81,15 @@ app.delete('/api/data', async (req, res) => {
   }
 });
 
-// IA PROXY — calls Anthropic API server-side (keeps API key safe)
+// IA PROXY — análisis de fotos y tablas
 app.post('/api/ia/import', async (req, res) => {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'API key not configured' });
-
   const payload = JSON.stringify({
-    model: 'claude-opus-4-5',
+    model: 'claude-sonnet-4-6',
     max_tokens: 4000,
     messages: req.body.messages
   });
-
   const options = {
     hostname: 'api.anthropic.com',
     path: '/v1/messages',
@@ -104,25 +101,54 @@ app.post('/api/ia/import', async (req, res) => {
       'Content-Length': Buffer.byteLength(payload)
     }
   };
-
   const apiReq = https.request(options, (apiRes) => {
     let data = '';
     apiRes.on('data', chunk => { data += chunk; });
     apiRes.on('end', () => {
-      try {
-        res.json(JSON.parse(data));
-      } catch (e) {
-        res.status(500).json({ error: 'Invalid response from AI' });
-      }
+      try { res.json(JSON.parse(data)); }
+      catch (e) { res.status(500).json({ error: 'Invalid response from AI' }); }
     });
   });
-
-  apiReq.on('error', (e) => {
-    res.status(500).json({ error: e.message });
-  });
-
+  apiReq.on('error', (e) => { res.status(500).json({ error: e.message }); });
   apiReq.write(payload);
   apiReq.end();
+});
+
+// PDF GENERATION — genera PDF real usando puppeteer
+app.post('/api/pdf', async (req, res) => {
+  try {
+    const puppeteer = require('puppeteer');
+    const { html, filename } = req.body;
+    if (!html) return res.status(400).json({ error: 'No HTML provided' });
+
+    const browser = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu'
+      ]
+    });
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+    const pdf = await page.pdf({
+      format: 'A4',
+      margin: { top: '1.5cm', right: '1.5cm', bottom: '1.5cm', left: '1.5cm' },
+      printBackground: true,
+      displayHeaderFooter: false
+    });
+    await browser.close();
+
+    const fname = (filename || 'factura').replace(/[^a-zA-Z0-9_-]/g, '_');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${fname}.pdf"`);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+    res.send(pdf);
+  } catch (e) {
+    console.error('PDF error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('*', (req, res) => {
